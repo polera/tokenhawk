@@ -1,0 +1,9 @@
+.idea
+/tokenhawk
+*.db
+*.db-shm
+*.db-wal
+tokenhawk-*.json
+tokenhawk-*.csv
+tools/vhs/.demo/
+tools/vhs/.render.gif
