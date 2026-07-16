@@ -45,10 +45,10 @@ var good = lipgloss.NewStyle().Foreground(lipgloss.Color("#65d46e"))
 var alarmStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#ff5f56"))
 
 const (
-	highInputAlarmTokens int64 = 100_000
-	minimumCacheRatio          = 0.80
-	tableOuterWidth            = 2
-	tableCellPadding           = 2
+	highInputAlarmTokens int64   = 100_000
+	minimumCacheRatio    float64 = 0.80
+	tableOuterWidth      int     = 2
+	tableCellPadding     int     = 2
 )
 
 func New(mon *monitor.Monitor) Model {
