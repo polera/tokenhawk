@@ -48,6 +48,12 @@ tokenhawk
 
 Ensure `$(go env GOPATH)/bin` is on `PATH` if the installed command is not found.
 
+Precompiled binaries for Linux, macOS, and Windows on amd64 and arm64 are also
+available from [GitHub Releases](https://github.com/polera/tokenhawk/releases/latest).
+Download the archive for your platform, extract `tokenhawk` (`tokenhawk.exe` on
+Windows), and place it somewhere on your `PATH`. Each release includes
+`checksums.txt` for verifying the download.
+
 Or build a local checkout:
 
 ```sh
