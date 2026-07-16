@@ -13,7 +13,7 @@ const (
 	highInputAlarmTokens = 100_000
 	minimumCacheRatio    = 0.80
 
-	pink  = "\x1b[38;2;255;106;193m"
+	blue  = "\x1b[38;2;5;169;199m"
 	white = "\x1b[38;2;248;248;242m"
 	red   = "\x1b[38;2;255;92;87m"
 	bold  = "\x1b[1m"
@@ -129,12 +129,12 @@ func Render(session core.Session, format string) (string, error) {
 		if alarm {
 			return red + bold + "⚠ TOKENHAWK LOW CACHE" + reset + white + "  " + metrics + reset, nil
 		}
-		return pink + bold + "TOKENHAWK" + reset + white + "  " + metrics + reset, nil
+		return blue + bold + "TOKENHAWK" + reset + white + "  " + metrics + reset, nil
 	case "tmux":
 		if alarm {
 			return "#[fg=#ff5c57,bold]⚠ TOKENHAWK LOW CACHE#[fg=#f8f8f2,nobold]  " + metrics, nil
 		}
-		return "#[fg=#ff6ac1,bold]TOKENHAWK#[fg=#f8f8f2,nobold]  " + metrics, nil
+		return "#[fg=#05A9C7,bold]TOKENHAWK#[fg=#f8f8f2,nobold]  " + metrics, nil
 	default:
 		if alarm {
 			return "⚠ TOKENHAWK LOW CACHE  " + metrics, nil
@@ -155,9 +155,9 @@ func Waiting(selector Selector, format string) (string, error) {
 	case "plain":
 		return message, nil
 	case "ansi":
-		return pink + bold + "TOKENHAWK" + reset + white + fmt.Sprintf("  waiting for %s session…", provider) + reset, nil
+		return blue + bold + "TOKENHAWK" + reset + white + fmt.Sprintf("  waiting for %s session…", provider) + reset, nil
 	case "tmux":
-		return fmt.Sprintf("#[fg=#ff6ac1,bold]TOKENHAWK#[fg=#888888,nobold]  waiting for %s session…", provider), nil
+		return fmt.Sprintf("#[fg=#05A9C7,bold]TOKENHAWK#[fg=#888888,nobold]  waiting for %s session…", provider), nil
 	case "json":
 		data, err := json.Marshal(struct {
 			Provider string `json:"provider"`

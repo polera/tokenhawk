@@ -122,7 +122,7 @@ func configureTmux(target, statusCommand string, dedicated bool) error {
 	}
 	if dedicated {
 		settings = append(settings,
-			[2]string{"status-left", " #[fg=#ff6ac1,bold]TOKENHAWK #[fg=#888888,nobold]"},
+			[2]string{"status-left", " #[fg=#05A9C7,bold]TOKENHAWK #[fg=#888888,nobold]"},
 			[2]string{"status-style", "bg=#262b33,fg=#f8f8f2"},
 		)
 	}

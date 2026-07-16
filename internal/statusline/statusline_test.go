@@ -82,6 +82,26 @@ func TestRenderPlainIncludesSessionMetrics(t *testing.T) {
 	}
 }
 
+func TestRenderUsesStandardBlueBrandColor(t *testing.T) {
+	session := core.Session{Provider: core.Claude}
+
+	ansi, err := Render(session, "ansi")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(ansi, "\x1b[38;2;5;169;199m") {
+		t.Fatalf("ANSI status does not use standard blue: %q", ansi)
+	}
+
+	tmux, err := Render(session, "tmux")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(tmux, "#[fg=#05A9C7,bold]") {
+		t.Fatalf("tmux status does not use standard blue: %q", tmux)
+	}
+}
+
 func TestRenderAlarmAndJSON(t *testing.T) {
 	session := core.Session{Provider: core.Gemini, ID: "g", Active: true, Usage: []core.Usage{{Input: 200_000, CachedInput: 100_000, Output: 1_000, PricingStatus: "unpriced"}}}
 	line, err := Render(session, "ansi")
@@ -109,7 +129,7 @@ func TestWaitingSupportsTmux(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(line, "waiting for codex") || !strings.Contains(line, "#[fg=") {
+	if !strings.Contains(line, "waiting for codex") || !strings.HasPrefix(line, "#[fg=#05A9C7,bold]") {
 		t.Fatalf("unexpected waiting line: %s", line)
 	}
 }
