@@ -6,6 +6,7 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
 	"github.com/polera/tokenhawk/internal/core"
 )
 
@@ -26,7 +27,7 @@ func TestSessionRowsShowIndependentBreakdowns(t *testing.T) {
 	if rows[0][2] != "1/1" || rows[0][3] != "100" || rows[0][4] != "40" || rows[0][5] != "20" || rows[0][6] != "5.00:1" || rows[0][7] != "120" {
 		t.Fatalf("first session was not broken down independently: %#v", rows[0])
 	}
-	if rows[1][2] != "—" || rows[1][3] != "7" || rows[1][4] != "2" || rows[1][5] != "3" || rows[1][6] != "2.33:1" || rows[1][7] != "10" {
+	if rows[1][2] != "-" || rows[1][3] != "7" || rows[1][4] != "2" || rows[1][5] != "3" || rows[1][6] != "2.33:1" || rows[1][7] != "10" {
 		t.Fatalf("second session was not broken down independently: %#v", rows[1])
 	}
 	if rows[0][8] != "unpriced" || rows[1][8] != "unpriced" {
@@ -35,11 +36,11 @@ func TestSessionRowsShowIndependentBreakdowns(t *testing.T) {
 }
 
 func TestHawkBrandHasCompactAndFullArtwork(t *testing.T) {
-	if got := hawkBrand(40); !strings.Contains(got, "▒▓▓▓▓▒") || !strings.Contains(got, "TOKENHAWK") {
-		t.Fatalf("compact brand missing hawk: %q", got)
+	if got := hawkBrand(40); !strings.Contains(got, "TOKENHAWK") {
+		t.Fatalf("compact brand missing wordmark: %q", got)
 	}
-	if got := hawkBrand(120); !strings.Contains(got, "⢠⣤⣤⣤⣤") || !strings.Contains(got, "⠘⠛⠛⠛⠛") || !strings.Contains(got, "session token monitor") {
-		t.Fatalf("full brand missing hawk: %q", got)
+	if got := hawkBrand(120); !strings.Contains(got, "TOKENHAWK") || !strings.Contains(got, "session token monitor") {
+		t.Fatalf("full brand missing wordmark: %q", got)
 	}
 }
 
@@ -49,7 +50,7 @@ func TestResizeAcrossColumnLayoutsRebuildsRowShape(t *testing.T) {
 	for _, tc := range []struct {
 		width int
 		cells int
-	}{{110, 10}, {140, 12}, {50, 5}, {120, 12}, {79, 5}, {80, 10}} {
+	}{{110, 10}, {140, 12}, {50, 5}, {131, 12}, {95, 5}, {96, 10}} {
 		updated, _ := m.Update(tea.WindowSizeMsg{Width: tc.width, Height: 30})
 		m = updated.(Model)
 		rows := m.table.Rows()
@@ -58,6 +59,21 @@ func TestResizeAcrossColumnLayoutsRebuildsRowShape(t *testing.T) {
 		}
 		if m.table.Cursor() != 0 {
 			t.Fatalf("width %d lost the selected session", tc.width)
+		}
+	}
+}
+
+func TestResponsiveTableHeadersFitWithoutCuttingOffUpdated(t *testing.T) {
+	for _, width := range []int{58, 95, 96, 120, 130, 131, 150} {
+		m := New(nil)
+		updated, _ := m.Update(tea.WindowSizeMsg{Width: width, Height: 30})
+		m = updated.(Model)
+		header := strings.Split(m.table.View(), "\n")[0]
+		if got, limit := lipgloss.Width(header), m.table.Width(); got > limit {
+			t.Fatalf("width %d rendered a %d-cell header in a %d-cell table: %q", width, got, limit, header)
+		}
+		if m.layout > 0 && !strings.Contains(header, "Updated") {
+			t.Fatalf("width %d cut off the Updated header: %q", width, header)
 		}
 	}
 }
@@ -84,7 +100,7 @@ func TestInputOutputRatios(t *testing.T) {
 	for _, tc := range []struct {
 		input, output int64
 		want          string
-	}{{100, 20, "5.00:1"}, {20, 100, "1:5.00"}, {0, 10, "0:1"}, {10, 0, "∞:1"}, {0, 0, "—"}} {
+	}{{100, 20, "5.00:1"}, {20, 100, "1:5.00"}, {0, 10, "0:1"}, {10, 0, "∞:1"}, {0, 0, "-"}} {
 		if got := ratioText(tc.input, tc.output); got != tc.want {
 			t.Fatalf("ratioText(%d, %d) = %q, want %q", tc.input, tc.output, got, tc.want)
 		}

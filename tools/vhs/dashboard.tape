@@ -1,4 +1,4 @@
-# Wide dashboard — hero screenshot (layout 2: all columns + full wordmark)
+# Wide dashboard: hero screenshot (layout 2: all columns + full wordmark)
 Output tools/vhs/.render.gif
 
 Set Shell zsh

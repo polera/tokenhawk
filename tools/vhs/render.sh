@@ -2,7 +2,7 @@
 # Regenerate the README screenshots in assets/ with VHS.
 #
 # Requires: vhs (https://github.com/charmbracelet/vhs), python3, go.
-# Everything runs against synthetic demo data — no real session stores are read.
+# Everything runs against synthetic demo data; no real session stores are read.
 #
 # Usage:  tools/vhs/render.sh            # render all tapes
 #         tools/vhs/render.sh dashboard  # render one tape by name
@@ -21,6 +21,8 @@ mkdir -p "$DEMO"
 cat > "$DEMO/run.sh" <<EOF
 #!/bin/sh
 cd "$ROOT"
+# Screenshots are color assets even when the invoking shell prefers NO_COLOR.
+unset NO_COLOR
 exec ./tokenhawk --config "$DEMO/empty.toml" \\
   --claude-dir "$DEMO/fixtures/claude" --codex-dir "$DEMO/fixtures/codex" \\
   --gemini-dir "$DEMO/fixtures/gemini" --pi-dir "$DEMO/fixtures/pi" \\

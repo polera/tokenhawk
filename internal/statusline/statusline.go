@@ -221,7 +221,7 @@ func human(value int64) string {
 func ratioText(input, output int64) string {
 	switch {
 	case input == 0 && output == 0:
-		return "—"
+		return "-"
 	case output == 0:
 		return "∞:1"
 	case input == 0:

@@ -190,7 +190,7 @@ Equivalent CLI flags override the loaded values. Use `--rebuild` after changing 
 
 ## Pricing
 
-Claude, Codex, and Gemini costs are explicitly estimates of public API list-price equivalents—not subscription charges, invoices, free-tier consumption, discounts, or taxes. The bundled, effective-dated catalog only prices exact known model IDs. Unknown identifiers remain marked `unpriced` rather than inheriting a guessed family rate. Pi and OpenCode already record calculated costs; Tokenhawk labels those values `reported` and preserves them instead of applying a second price calculation.
+Claude, Codex, and Gemini costs are explicitly estimates of public API list-price equivalents, not subscription charges, invoices, free-tier consumption, discounts, or taxes. The bundled, effective-dated catalog only prices exact known model IDs. Unknown identifiers remain marked `unpriced` rather than inheriting a guessed family rate. Pi and OpenCode already record calculated costs; Tokenhawk labels those values `reported` and preserves them instead of applying a second price calculation.
 
 Session detail includes a copy-ready resume command. Tokenhawk changes to the recorded project directory first because resume behavior can be project-sensitive.
 

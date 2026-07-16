@@ -39,8 +39,7 @@ type Model struct {
 	layout                       int
 }
 
-var titleStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#ff7cc8"))
-var hawkStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#ff7cc8"))
+var titleStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#05A9C7"))
 var muted = lipgloss.NewStyle().Foreground(lipgloss.Color("#888888"))
 var good = lipgloss.NewStyle().Foreground(lipgloss.Color("#65d46e"))
 var alarmStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#ff5f56"))
@@ -48,6 +47,8 @@ var alarmStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#ff5f
 const (
 	highInputAlarmTokens int64 = 100_000
 	minimumCacheRatio          = 0.80
+	tableOuterWidth            = 2
+	tableCellPadding           = 2
 )
 
 func New(mon *monitor.Monitor) Model {
@@ -72,9 +73,9 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.BackgroundColorMsg:
 		styles := table.DefaultStyles()
 		if x.IsDark() {
-			styles.Selected = styles.Selected.Foreground(lipgloss.Color("#ff7cc8"))
+			styles.Selected = styles.Selected.Foreground(lipgloss.Color("#05A9C7"))
 		} else {
-			styles.Selected = styles.Selected.Foreground(lipgloss.Color("#8f1d65"))
+			styles.Selected = styles.Selected.Foreground(lipgloss.Color("#046b80"))
 		}
 		m.table.SetStyles(styles)
 		return m, nil
@@ -227,7 +228,7 @@ func (m *Model) resize() {
 	// crossing a responsive breakpoint cannot pair 8-cell rows with 10 columns.
 	m.table.SetRows(nil)
 	w := max(30, m.width)
-	m.table.SetWidth(w - 2)
+	m.table.SetWidth(w - tableOuterWidth)
 	headerHeight := 9
 	if w >= 60 {
 		headerHeight = 14
@@ -242,20 +243,24 @@ func (m *Model) resize() {
 func (m *Model) setColumns() {
 	w := max(30, m.width)
 	switch {
-	case w < 80:
+	case w < 96:
 		m.layout = 0
-		session := max(8, w-47)
+		session := flexibleColumnWidth(w, 38, 5, 8)
 		m.table.SetColumns([]table.Column{{Title: "Provider", Width: 8}, {Title: "Session", Width: session}, {Title: "Agents", Width: 6}, {Title: "I/O · Ratio", Width: 16}, {Title: "Total", Width: 8}})
-	case w < 120:
+	case w < 131:
 		m.layout = 1
-		session := max(8, w-84)
+		session := flexibleColumnWidth(w, 66, 10, 8)
 		m.table.SetColumns([]table.Column{{Title: "Provider", Width: 8}, {Title: "Session", Width: session}, {Title: "Agents", Width: 6}, {Title: "Input", Width: 7}, {Title: "Cached", Width: 7}, {Title: "Output", Width: 7}, {Title: "I:O", Width: 7}, {Title: "Total", Width: 8}, {Title: "Cost USD", Width: 9}, {Title: "Updated", Width: 7}})
 	default:
 		m.layout = 2
-		session := max(10, w-115)
+		session := flexibleColumnWidth(w, 95, 12, 10)
 		m.table.SetColumns([]table.Column{{Title: "Provider", Width: 8}, {Title: "Session", Width: session}, {Title: "Agents", Width: 6}, {Title: "Model", Width: 16}, {Title: "Input", Width: 8}, {Title: "Cached", Width: 8}, {Title: "Output", Width: 8}, {Title: "I:O", Width: 7}, {Title: "Reason", Width: 8}, {Title: "Total", Width: 9}, {Title: "Cost USD", Width: 10}, {Title: "Updated", Width: 7}})
 		return
 	}
+}
+func flexibleColumnWidth(terminalWidth, fixedWidth, columnCount, minimum int) int {
+	available := terminalWidth - tableOuterWidth - fixedWidth - columnCount*tableCellPadding
+	return max(minimum, available)
 }
 func (m *Model) rebuild() {
 	q := strings.ToLower(m.search)
@@ -334,7 +339,7 @@ func (m Model) View() tea.View {
 	}
 	v := tea.NewView(body)
 	v.AltScreen = true
-	v.WindowTitle = "Tokenhawk — token usage monitor"
+	v.WindowTitle = "Tokenhawk - token usage monitor"
 	v.MouseMode = tea.MouseModeCellMotion
 	return v
 }
@@ -480,7 +485,7 @@ func subagentSearchText(s core.Session) string {
 }
 func agentCount(s core.Session) string {
 	if len(s.Subagents) == 0 {
-		return "—"
+		return "-"
 	}
 	return fmt.Sprintf("%d/%d", s.RunningSubagents(), len(s.Subagents))
 }
@@ -523,24 +528,9 @@ func sessionLabel(s core.Session) string {
 }
 func hawkBrand(width int) string {
 	if width < 60 {
-		return hawkStyle.Render("▒▓▓▓▓▒") + "  " + titleStyle.Render("TOKENHAWK")
+		return titleStyle.Render("TOKENHAWK")
 	}
-	hawk := eagleMark()
-	wordmark := titleStyle.Render("TOKENHAWK") + "\n" + muted.Render("session token monitor")
-	return lipgloss.JoinHorizontal(lipgloss.Center, hawk, "   ", wordmark)
-}
-func eagleMark() string {
-	// 24x6 raster generated directly from the supplied angular hawk-head logo.
-	lines := strings.Split(` ⢠⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣤⣄⡀
- ⢸⣿⣿⣿⣿⣿⢟⣫⣽⡿⣿⣿⣿⣿⣿⣿⣶⣶⣦⣤⣀
- ⢨⣭⣭⣭⣍⡑⢿⣿⣧⣀⣻⣿⣿⣟⣿⠋  ⠉⠙⢿⣷
- ⢸⣿⣿⣿⣿⣿⢆⣿⡿⣫⣽⣿⣿⣿⣶⣤⣤⣀⡀ ⣸⡿
- ⠘⠛⠛⠛⠛⠛⠈⠛⠛⠛⠛⠛⠛⠛⠛⠛⠛⠛⠻⣷⡿⠁
-                    ⠋`, "\n")
-	for i, line := range lines {
-		lines[i] = hawkStyle.Render(line)
-	}
-	return strings.Join(lines, "\n")
+	return titleStyle.Render("TOKENHAWK") + "\n" + muted.Render("session token monitor")
 }
 func shortProject(p string) string {
 	if p == "" {
@@ -561,7 +551,7 @@ func human(v int64) string {
 func ratioText(input, output int64) string {
 	switch {
 	case input == 0 && output == 0:
-		return "—"
+		return "-"
 	case output == 0:
 		return "∞:1"
 	case input == 0:

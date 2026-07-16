@@ -1,4 +1,4 @@
-# Narrow terminal — responsive layout collapses columns and wordmark
+# Narrow terminal: responsive layout collapses columns and wordmark
 Output tools/vhs/.render.gif
 
 Set Shell zsh

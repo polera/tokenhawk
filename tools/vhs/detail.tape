@@ -1,4 +1,4 @@
-# Session detail — per-model + subagent breakdown with resume command
+# Session detail: per-model + subagent breakdown with resume command
 Output tools/vhs/.render.gif
 
 Set Shell zsh
