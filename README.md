@@ -50,7 +50,7 @@ The installer detects your operating system and architecture, verifies the relea
 checksum, and installs to `~/.local/bin`. Add that directory to your `PATH` if the
 installed command is not found.
 
-Alternatively, with Go 1.25 or newer, install the latest tagged release directly
+Alternatively, with Go 1.26 or newer, install the latest tagged release directly
 from the module root:
 
 ```sh
@@ -66,7 +66,7 @@ Download the archive for your platform, extract `tokenhawk` (`tokenhawk.exe` on
 Windows), and place it somewhere on your `PATH`. Each release includes
 `checksums.txt` for verifying the download.
 
-Or build a local checkout with Go 1.25 or newer:
+Or build a local checkout with Go 1.26 or newer:
 
 ```sh
 go build -o tokenhawk .
