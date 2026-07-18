@@ -70,6 +70,7 @@ func DefaultFile() (string, error) {
 
 // Load applies the small TOML subset Tokenhawk emits: top-level key = value pairs.
 func Load(path string, c *Config) error {
+	// #nosec G304 -- path is the user's own config file location, supplied by flag or Path().
 	f, err := os.Open(path)
 	if os.IsNotExist(err) {
 		return nil

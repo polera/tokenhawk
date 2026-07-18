@@ -60,6 +60,7 @@ func wrapCurrentTmux(client string, providerArgs []string, statusCommand string)
 	if err = configureTmux("", statusCommand, false); err != nil {
 		return err
 	}
+	// #nosec G204 -- client and providerArgs are the command line the user asked us to wrap.
 	cmd := exec.Command(client, providerArgs...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	if err = cmd.Start(); err != nil {
@@ -102,6 +103,7 @@ func wrapNewTmux(client, provider string, providerArgs []string, statusCommand s
 		return err
 	}
 	configured = true
+	// #nosec G204 -- name is a session name we generated from the provider and our own PID.
 	cmd := exec.Command("tmux", "attach-session", "-t", name)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	return cmd.Run()
@@ -135,6 +137,7 @@ func configureTmux(target, statusCommand string, dedicated bool) error {
 }
 
 func tmuxValue(option string) (string, error) {
+	// #nosec G204 -- option is one of a fixed set of tmux option names used by this package.
 	cmd := exec.Command("tmux", "show-option", "-gv", option)
 	output, err := cmd.Output()
 	if err != nil {
@@ -148,6 +151,8 @@ func tmuxSet(option, value string) error {
 }
 
 func runTmux(args ...string) error {
+	// #nosec G204 -- args are tmux subcommands built by this package; they are passed as
+	// separate argv entries, so no shell interpretation occurs.
 	cmd := exec.Command("tmux", args...)
 	if output, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("tmux %s: %w: %s", strings.Join(args, " "), err, strings.TrimSpace(string(output)))

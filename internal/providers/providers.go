@@ -214,7 +214,7 @@ func ParseOpenCodeDB(path string, unchanged func(source string, updated time.Tim
 		var row openCodeSessionRow
 		var parent, title, agent sql.NullString
 		if err = rows.Scan(&row.id, &row.directory, &parent, &title, &agent, &row.created, &row.updated); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return nil, nil, err
 		}
 		row.parentID, row.title, row.agent = parent.String, title.String, agent.String
@@ -395,6 +395,7 @@ func parseClaudeSubagent(path string, previous core.SourceState) (core.Parsed, e
 		var meta struct {
 			AgentType string `json:"agentType"`
 		}
+		// #nosec G304 -- metaPath is derived from a session file we already discovered by scanning.
 		if b, e := os.ReadFile(metaPath); e == nil && json.Unmarshal(b, &meta) == nil {
 			a.Name = meta.AgentType
 		}
@@ -542,6 +543,7 @@ type geminiFile struct {
 }
 
 func parseGemini(path string) (core.Parsed, error) {
+	// #nosec G304 -- path comes from scanning the provider's own session directory.
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return core.Parsed{}, err
@@ -553,6 +555,7 @@ func parseGemini(path string) (core.Parsed, error) {
 	s := core.Session{Provider: core.Gemini, ID: f.SessionID, StartedAt: f.Start, UpdatedAt: f.Updated, SourcePath: path, SourceHealth: "ok"}
 	usage := map[string]*core.Usage{}
 	rootFile := filepath.Join(filepath.Dir(filepath.Dir(path)), ".project_root")
+	// #nosec G304 -- rootFile sits alongside the session file we are already reading.
 	if p, e := os.ReadFile(rootFile); e == nil {
 		s.Project = strings.TrimSpace(string(p))
 	}
@@ -581,6 +584,7 @@ func parseGemini(path string) (core.Parsed, error) {
 }
 
 func scanJSONL(path string, start int64, fn func([]byte) error) (int64, error) {
+	// #nosec G304 -- path comes from scanning the provider's own session directory.
 	f, err := os.Open(path)
 	if err != nil {
 		return start, err

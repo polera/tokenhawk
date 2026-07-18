@@ -22,7 +22,7 @@ type Document struct {
 
 func Write(path, format string, sessions []core.Session) error {
 	dir := filepath.Dir(path)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return err
 	}
 	tmp, err := os.CreateTemp(dir, ".tokenhawk-export-*")
@@ -32,7 +32,7 @@ func Write(path, format string, sessions []core.Session) error {
 	name := tmp.Name()
 	ok := false
 	defer func() {
-		tmp.Close()
+		_ = tmp.Close()
 		if !ok {
 			_ = os.Remove(name)
 		}

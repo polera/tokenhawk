@@ -40,6 +40,7 @@ func Load(override string) (*Catalog, error) {
 		return nil, err
 	}
 	if override != "" {
+		// #nosec G304 -- override is a pricing file path the user explicitly points us at.
 		b, err := os.ReadFile(override)
 		if err != nil {
 			return nil, err

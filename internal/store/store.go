@@ -18,7 +18,7 @@ import (
 type Store struct{ db *sql.DB }
 
 func Open(path string) (*Store, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return nil, err
 	}
 	db, err := sql.Open("sqlite", path)
@@ -28,7 +28,7 @@ func Open(path string) (*Store, error) {
 	db.SetMaxOpenConns(4)
 	s := &Store{db: db}
 	if err = s.init(); err != nil {
-		db.Close()
+		_ = db.Close()
 		return nil, err
 	}
 	return s, nil
@@ -104,7 +104,7 @@ func (s *Store) ensureSourceColumn(name, definition string) (bool, error) {
 		var column, typ string
 		var defaultValue any
 		if err = rows.Scan(&cid, &column, &typ, &notnull, &defaultValue, &pk); err != nil {
-			rows.Close()
+			_ = rows.Close()
 			return false, err
 		}
 		if column == name {
@@ -112,10 +112,10 @@ func (s *Store) ensureSourceColumn(name, definition string) (bool, error) {
 		}
 	}
 	if err = rows.Err(); err != nil {
-		rows.Close()
+		_ = rows.Close()
 		return false, err
 	}
-	rows.Close()
+	_ = rows.Close()
 	if found {
 		return false, nil
 	}
@@ -375,10 +375,10 @@ func (s *Store) reconcile(ctx context.Context, paths []string, provider core.Pro
 		}
 	}
 	if err = rows.Err(); err != nil {
-		rows.Close()
+		_ = rows.Close()
 		return err
 	}
-	rows.Close()
+	_ = rows.Close()
 	for _, p := range gone {
 		if _, err = s.db.ExecContext(ctx, `DELETE FROM sources WHERE path=?`, p); err != nil {
 			return err
