@@ -66,6 +66,18 @@ Download the archive for your platform, extract `tokenhawk` (`tokenhawk.exe` on
 Windows), and place it somewhere on your `PATH`. Each release includes
 `checksums.txt` for verifying the download.
 
+Tokenhawk checks GitHub Releases once a day when starting the interactive UI. If
+a newer release is available, choose to install it or defer the prompt for 24
+hours. To check and upgrade immediately, run:
+
+```sh
+tokenhawk upgrade
+```
+
+Upgrades download the release archive for the current operating system and
+architecture, verify it against the published SHA-256 checksum, and replace the
+current executable.
+
 Or build a local checkout with Go 1.26 or newer:
 
 ```sh

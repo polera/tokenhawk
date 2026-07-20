@@ -1,16 +1,19 @@
 package cli
 
 import (
+	"bufio"
 	"context"
 	"flag"
 	"fmt"
 	"os"
 	"os/signal"
+	"runtime/debug"
 	"strings"
 	"syscall"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/mattn/go-isatty"
 	"github.com/polera/tokenhawk/internal/config"
 	"github.com/polera/tokenhawk/internal/core"
 	exporter "github.com/polera/tokenhawk/internal/export"
@@ -20,6 +23,7 @@ import (
 	"github.com/polera/tokenhawk/internal/statusline"
 	"github.com/polera/tokenhawk/internal/store"
 	"github.com/polera/tokenhawk/internal/tui"
+	"github.com/polera/tokenhawk/internal/upgrade"
 )
 
 // Main runs Tokenhawk and returns a process exit code. Both supported command
@@ -36,11 +40,12 @@ func Main(args []string, version string) int {
 }
 
 func Run(args []string, version string) error {
+	version = installedVersion(version)
 	command := "tui"
 	statuslineProvider := ""
 	if len(args) > 0 {
 		switch args[0] {
-		case "export", "status":
+		case "export", "status", "upgrade":
 			command = args[0]
 			args = args[1:]
 		case "statusline":
@@ -60,6 +65,17 @@ func Run(args []string, version string) error {
 			fmt.Println(version)
 			return nil
 		}
+	}
+	if command == "upgrade" {
+		upgradeFlags := flag.NewFlagSet("tokenhawk upgrade", flag.ContinueOnError)
+		upgradeFlags.Usage = func() { fmt.Fprintln(upgradeFlags.Output(), "usage: tokenhawk upgrade") }
+		if err := upgradeFlags.Parse(args); err != nil {
+			return err
+		}
+		if upgradeFlags.NArg() != 0 {
+			return fmt.Errorf("upgrade does not accept arguments")
+		}
+		return runUpgrade(version)
 	}
 	cfg, err := config.Defaults()
 	if err != nil {
@@ -83,6 +99,7 @@ func Run(args []string, version string) error {
 		fmt.Fprintln(fs.Output(), "       tokenhawk status [flags]")
 		fmt.Fprintln(fs.Output(), "       tokenhawk statusline <claude|codex|gemini|pi|opencode> [flags]")
 		fmt.Fprintln(fs.Output(), "       tokenhawk wrap <claude|codex|gemini|pi|opencode> [client arguments]")
+		fmt.Fprintln(fs.Output(), "       tokenhawk upgrade")
 		fmt.Fprintln(fs.Output(), "       tokenhawk version")
 		fs.PrintDefaults()
 	}
@@ -119,6 +136,11 @@ func Run(args []string, version string) error {
 	}
 	if err = fs.Parse(args); err != nil {
 		return err
+	}
+	if command == "tui" && interactiveTerminal() {
+		if upgraded := offerUpgrade(version); upgraded {
+			return nil
+		}
 	}
 	cfg.IncludeSource = *includeSource
 	s, err := store.Open(cfg.DBPath)
@@ -221,6 +243,102 @@ func Run(args []string, version string) error {
 	cancel()
 	time.Sleep(10 * time.Millisecond)
 	return err
+}
+
+func installedVersion(linked string) string {
+	module := ""
+	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
+		module = info.Main.Version
+	}
+	return chooseInstalledVersion(linked, module)
+}
+
+func chooseInstalledVersion(linked, module string) string {
+	if linked != "" && linked != "dev" {
+		return linked
+	}
+	if module != "" && module != "(devel)" {
+		return module
+	}
+	return linked
+}
+
+func runUpgrade(version string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	result, err := upgrade.NewClient().Upgrade(ctx, version, "")
+	if err != nil {
+		return err
+	}
+	if !result.Updated {
+		fmt.Printf("no upgrade available (installed %s; latest release %s)\n", result.Previous, result.Current)
+		return nil
+	}
+	fmt.Printf("upgraded tokenhawk from %s to %s\n", result.Previous, result.Current)
+	return nil
+}
+
+func offerUpgrade(version string) bool {
+	if _, err := upgrade.Available(version, version); err != nil {
+		return false
+	}
+	statePath, err := upgrade.StateFile()
+	if err != nil {
+		return false
+	}
+	state, err := upgrade.LoadState(statePath)
+	if err != nil {
+		state = upgrade.State{}
+	}
+	now := time.Now()
+	if !state.ShouldCheck(now) {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	client := upgrade.NewClient()
+	release, err := client.Latest(ctx)
+	cancel()
+	if err != nil {
+		return false
+	}
+	state.CheckedAt = now
+	state.LatestVersion = release.Version
+	_ = upgrade.SaveState(statePath, state)
+	available, err := upgrade.Available(version, release.Version)
+	if err != nil || !available {
+		return false
+	}
+
+	fmt.Printf("A new Tokenhawk release is available: %s -> %s\n", version, release.Version)
+	fmt.Print("Upgrade now? [y/N] ")
+	answer, _ := bufio.NewReader(os.Stdin).ReadString('\n')
+	answer = strings.ToLower(strings.TrimSpace(answer))
+	if answer != "y" && answer != "yes" {
+		state.DeferredUntil = now.Add(upgrade.DeferDuration)
+		_ = upgrade.SaveState(statePath, state)
+		fmt.Println("Upgrade deferred. Run `tokenhawk upgrade` at any time.")
+		return false
+	}
+
+	ctx, cancel = context.WithTimeout(context.Background(), 30*time.Second)
+	result, err := client.UpgradeTo(ctx, version, "", release)
+	cancel()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "tokenhawk: upgrade failed:", err)
+		return false
+	}
+	if result.Updated {
+		fmt.Printf("Upgraded tokenhawk from %s to %s. Restart tokenhawk to continue.\n", result.Previous, result.Current)
+		return true
+	}
+	return false
+}
+
+func interactiveTerminal() bool {
+	stdin := os.Stdin.Fd()
+	stdout := os.Stdout.Fd()
+	return (isatty.IsTerminal(stdin) || isatty.IsCygwinTerminal(stdin)) &&
+		(isatty.IsTerminal(stdout) || isatty.IsCygwinTerminal(stdout))
 }
 
 func effectiveStatusFormat(format string) string {
