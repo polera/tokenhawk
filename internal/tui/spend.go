@@ -133,7 +133,7 @@ func (m Model) spendContent() string {
 		return b.String()
 	}
 	total := core.SumUsage(spendUsage(m.shown))
-	fmt.Fprintf(&b, "%s  tokens %s  in %s  cached %s  out %s\n", titleStyle.Render("TOTAL"), human(total.Total), human(total.Input), cachedText(total), human(total.Output))
+	fmt.Fprintf(&b, "%s  tokens %s  in %s  cached %s  out %s  i:o %s\n", titleStyle.Render("TOTAL"), human(total.Total), human(total.Input), cachedText(total), human(total.Output), ratioText(total.Input, total.Output))
 	fmt.Fprintf(&b, "        %s\n", costDetail(total))
 	if cacheAlarm(total) {
 		fmt.Fprintf(&b, "%s\n", cacheAlarmText("this window", total))
@@ -194,6 +194,7 @@ func (m Model) spendSection(title string, groups []spendGroup, limit int, noun s
 		if m.width >= 96 {
 			line += fmt.Sprintf("  in %8s  cached %6s  out %8s", human(u.Input), human(u.CachedInput), human(u.Output))
 		}
+		line += fmt.Sprintf("  i:o %s", ratioText(u.Input, u.Output))
 		line += "  " + costText(u)
 		b.WriteString(line + "\n")
 	}

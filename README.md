@@ -30,7 +30,7 @@ _Screenshots use synthetic demo data._
 - Compact per-session status output for shell, JSON, ANSI, and tmux integrations
 - Native Claude Code status-line integration and tmux-backed wrappers for every supported client
 - Separate Active, Inactive Sessions, All Sessions, and Spend views
-- Spend totals since any relative or absolute date, broken out by provider, model, and day
+- Spend totals and input-to-output ratios since any relative or absolute date, broken out by provider, model, and day
 - Per-session and per-model input, cached, output, reasoning, tool, and total tokens
 - Parent/subagent accounting with running-agent counts and detailed child usage
 - API-equivalent estimates and provider-reported costs with explicit status
@@ -202,12 +202,12 @@ Press `4` for tokens and cost across a window instead of per session. The view t
 SPEND · last 7 days
 2026-07-13 09:41 → now  •  23 of 25 sessions  •  counted by last session update
 
-TOTAL  tokens 17.30M  in 16.71M  cached 15.99M (96%)  out 238.3k
+TOTAL  tokens 17.30M  in 16.71M  cached 15.99M (96%)  out 238.3k  i:o 70.1:1
        $20.184584 estimated (priced)
 
 BY PROVIDER
-  codex  ████████████    12 sess  tokens 10.25M  in 10.14M  cached 9.42M  out 117.5k  $11.8310
-  claude ████████····    11 sess  tokens  7.04M  in  6.57M  cached 6.57M  out 120.8k  $8.3536
+  codex  ████████████    12 sess  tokens 10.25M  in 10.14M  cached 9.42M  out 117.5k  i:o 86.3:1  $11.8310
+  claude ████████····    11 sess  tokens  7.04M  in  6.57M  cached 6.57M  out 120.8k  i:o 54.4:1  $8.3536
 ```
 
 `t` cycles the built-in windows: last 24 hours, 7 days, 30 days, month to date, and all time. `d` accepts a typed window, and `--since` opens Tokenhawk directly on one:

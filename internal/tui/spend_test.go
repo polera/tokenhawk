@@ -39,7 +39,7 @@ func TestSpendWindowExcludesSessionsUpdatedBeforeSince(t *testing.T) {
 		t.Fatalf("40-day-old session leaked into the 7d window:\n%s", view)
 	}
 	// Totals must include subagent usage, matching Session.Totals.
-	for _, want := range []string{"SPEND · last 7 days", "TOTAL", "636.0k", "$5.500000 estimated (priced)", "claude-haiku-4-5"} {
+	for _, want := range []string{"SPEND · last 7 days", "TOTAL", "636.0k", "i:o 23.5:1", "$5.500000 estimated (priced)", "claude-haiku-4-5"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("spend view missing %q:\n%s", want, view)
 		}
@@ -50,6 +50,21 @@ func TestSpendWindowExcludesSessionsUpdatedBeforeSince(t *testing.T) {
 	m.rebuild()
 	if len(m.shown) != 3 || !strings.Contains(m.spendContent(), "all time") {
 		t.Fatalf("all-time window did not include every session: %d shown", len(m.shown))
+	}
+}
+
+func TestSpendGroupsShowInputOutputRatiosAtEveryWidth(t *testing.T) {
+	for _, width := range []int{80, 140} {
+		m := spendModel(t)
+		m.tab = spendTab
+		m.width = width
+		m.resize()
+		view := m.spendContent()
+		for _, want := range []string{"i:o 24.3:1", "i:o 20.0:1"} {
+			if !strings.Contains(view, want) {
+				t.Fatalf("width %d spend view missing %q:\n%s", width, want, view)
+			}
+		}
 	}
 }
 
