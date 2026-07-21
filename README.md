@@ -1,6 +1,6 @@
 # Tokenhawk
 
-Tokenhawk is a local, live token-usage monitor for Claude Code, Codex, Gemini CLI, Pi, and OpenCode. It indexes session metadata from the tools' normal home-directory stores and presents active sessions, history, per-model usage, and cost estimates in a Bubble Tea terminal UI.
+Tokenhawk is a local, live token-usage monitor for Claude Code, Codex, Gemini CLI, Pi, and OpenCode. It indexes session metadata from the tools' normal home-directory stores and presents active sessions, history, per-model usage, spend since a chosen date, and cost estimates in a Bubble Tea terminal UI.
 
 Tokenhawk never stores or exports prompts, responses, tool arguments, credentials, or transcript content.
 
@@ -29,7 +29,8 @@ _Screenshots use synthetic demo data._
 - Live, local monitoring of Claude Code, Codex, Gemini CLI, Pi, and OpenCode sessions
 - Compact per-session status output for shell, JSON, ANSI, and tmux integrations
 - Native Claude Code status-line integration and tmux-backed wrappers for every supported client
-- Separate Active, Inactive Sessions, and All Sessions views
+- Separate Active, Inactive Sessions, All Sessions, and Spend views
+- Spend totals and input-to-output ratios since any relative or absolute date, broken out by provider, model, and day
 - Per-session and per-model input, cached, output, reasoning, tool, and total tokens
 - Parent/subagent accounting with running-agent counts and detailed child usage
 - API-equivalent estimates and provider-reported costs with explicit status
@@ -181,23 +182,54 @@ tokenhawk wrap opencode --session SESSION_ID
 | Key | Action |
 | --- | --- |
 | `1`, `2`, `3` | Active sessions, inactive sessions, all sessions |
+| `4` | Spend since a date |
 | `i` | Toggle between active and inactive session lists |
 | `j`/`k`, arrows, page keys | Navigate |
 | `p` | Cycle provider filter |
 | `s` | Sort by updated time, tokens, or cost |
 | `/` | Filter by project or model metadata |
+| `t` | Cycle the spend window (spend view) |
+| `d` | Type a spend window (spend view) |
 | `enter` | Session detail, including a provider-specific resume command |
 | `e` / `x` | Export the visible set as JSON / CSV |
 | `q` | Quit |
+
+## Spend since a date
+
+Press `4` for tokens and cost across a window instead of per session. The view totals input, cached input, output, and cost for the window, then breaks the same window out by provider, by model, and by day:
+
+```text
+SPEND · last 7 days
+2026-07-13 09:41 → now  •  23 of 25 sessions  •  counted by last session update
+
+TOTAL  tokens 17.30M  in 16.71M  cached 15.99M (96%)  out 238.3k  i:o 70.1:1
+       $20.184584 estimated (priced)
+
+BY PROVIDER
+  codex  ████████████    12 sess  tokens 10.25M  in 10.14M  cached 9.42M  out 117.5k  i:o 86.3:1  $11.8310
+  claude ████████····    11 sess  tokens  7.04M  in  6.57M  cached 6.57M  out 120.8k  i:o 54.4:1  $8.3536
+```
+
+`t` cycles the built-in windows: last 24 hours, 7 days, 30 days, month to date, and all time. `d` accepts a typed window, and `--since` opens Tokenhawk directly on one:
+
+```sh
+tokenhawk --since 30d
+tokenhawk --since 2026-07-01
+```
+
+Windows accept RFC 3339 timestamps, `YYYY-MM-DD` dates, relative offsets (`90m`, `24h`, `7d`, `2w`, `3mo`, `1y`, or any Go duration), and the keywords `today`, `yesterday`, `wtd`, `mtd`, `ytd`, and `all`. Relative windows keep rolling while Tokenhawk stays open. The provider filter and the `/` search narrow the spend view too, and `e` and `x` export exactly the sessions the window covers.
+
+Provider stores record one running total per session rather than a timestamped ledger, so a session's whole usage is counted on the day it was last updated. Sessions that span days or that resume after the window opens are therefore attributed to that single day, which the view states rather than implying a per-day ledger it cannot derive.
 
 ## Headless export
 
 ```sh
 tokenhawk export --format json --output usage.json
 tokenhawk export --format csv --output usage.csv --provider codex --since 2026-07-01
+tokenhawk export --format csv --output usage.csv --since mtd
 ```
 
-Filters include `--provider`, `--model`, `--project`, `--status`, `--since`, and `--until`. Dates accept RFC 3339 or `YYYY-MM-DD`. JSON contains nested per-model and subagent usage. CSV contains tagged session/model and subagent/model rows, including costs and running status. Source paths are excluded unless `--include-source` is set.
+Filters include `--provider`, `--model`, `--project`, `--status`, `--since`, and `--until`. Both dates accept every window form the spend view accepts; a bare `YYYY-MM-DD` in `--until` includes that whole day. JSON contains nested per-model and subagent usage. CSV contains tagged session/model and subagent/model rows, including costs and running status. Source paths are excluded unless `--include-source` is set.
 
 ## Configuration
 
