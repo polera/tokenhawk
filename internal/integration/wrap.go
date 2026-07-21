@@ -110,12 +110,6 @@ func wrapNewTmux(client, provider string, providerArgs []string, statusCommand s
 }
 
 func configureTmux(target, statusCommand string, dedicated bool) error {
-	args := func(values ...string) []string {
-		if target == "" {
-			return values
-		}
-		return append(values, "-t", target)
-	}
 	settings := [][2]string{
 		{"status", "on"},
 		{"status-interval", "2"},
@@ -129,7 +123,12 @@ func configureTmux(target, statusCommand string, dedicated bool) error {
 		)
 	}
 	for _, setting := range settings {
-		if err := runTmux(args("set-option", setting[0], setting[1])...); err != nil {
+		args := []string{"set-option"}
+		if target != "" {
+			args = append(args, "-t", target)
+		}
+		args = append(args, setting[0], setting[1])
+		if err := runTmux(args...); err != nil {
 			return err
 		}
 	}
