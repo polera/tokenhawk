@@ -14,6 +14,7 @@ import (
 	"github.com/polera/tokenhawk/internal/core"
 	exporter "github.com/polera/tokenhawk/internal/export"
 	"github.com/polera/tokenhawk/internal/monitor"
+	"github.com/polera/tokenhawk/internal/timerange"
 )
 
 type RefreshMsg struct{}
@@ -37,6 +38,11 @@ type Model struct {
 	detailOffset                 int
 	notice                       string
 	layout                       int
+	spendSpec                    string
+	spendSince                   time.Time
+	spendOffset                  int
+	sinceInput                   bool
+	sinceDraft                   string
 }
 
 var titleStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#05A9C7"))
@@ -49,11 +55,38 @@ const (
 	minimumCacheRatio    float64 = 0.80
 	tableOuterWidth      int     = 2
 	tableCellPadding     int     = 2
+	defaultSpendSpec     string  = "7d"
 )
 
 func New(mon *monitor.Monitor) Model {
 	t := table.New(table.WithFocused(true), table.WithHeight(15))
-	return Model{monitor: mon, table: t}
+	m := Model{monitor: mon, table: t}
+	// The built-in default is a constant this package controls, so it parses.
+	_ = m.setSpendSpec(defaultSpendSpec)
+	return m
+}
+
+// WithSpendWindow opens Tokenhawk on the spend view for a caller-supplied
+// window, so `tokenhawk --since 30d` lands where the flag is meaningful.
+func (m Model) WithSpendWindow(spec string) (Model, error) {
+	if err := m.setSpendSpec(spec); err != nil {
+		return m, err
+	}
+	m.tab = spendTab
+	return m, nil
+}
+
+// setSpendSpec resolves spec once so every rebuild filters against a stable
+// instant instead of drifting with the clock between renders.
+func (m *Model) setSpendSpec(spec string) error {
+	since, err := timerange.Parse(spec, time.Now(), false)
+	if err != nil {
+		return err
+	}
+	m.spendSpec = spec
+	m.spendSince = since
+	m.spendOffset = 0
+	return nil
 }
 func (m Model) Init() tea.Cmd { return tea.Batch(m.load(), tea.RequestBackgroundColor) }
 func (m Model) load() tea.Cmd {
@@ -97,8 +130,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case tea.KeyPressMsg:
+		if m.sinceInput {
+			return m.updateSinceInput(x)
+		}
 		if m.searching {
 			return m.updateSearch(x)
+		}
+		if m.tab == spendTab && !m.detail {
+			return m.updateSpend(x)
 		}
 		if m.detail {
 			if x.String() == "e" || x.String() == "x" {
@@ -143,6 +182,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "3":
 			m.tab = 2
 			m.rebuild()
+		case "4":
+			m.tab = spendTab
+			m.spendOffset = 0
+			m.rebuild()
 		case "i":
 			m.toggleActiveInactive()
 		case "p":
@@ -168,6 +211,85 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.table, cmd = m.table.Update(msg)
 	return m, cmd
+}
+
+// updateSpend drives the spend view. It never falls through to the session
+// table, whose cursor is meaningless here.
+func (m Model) updateSpend(k tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch k.String() {
+	case "q", "ctrl+c":
+		return m, tea.Quit
+	case "1", "2", "3":
+		m.tab = int(k.String()[0] - '1')
+		m.spendOffset = 0
+		m.rebuild()
+	case "i":
+		m.tab = 0
+		m.spendOffset = 0
+		m.rebuild()
+	case "p":
+		m.cycleProvider()
+		m.rebuild()
+	case "t":
+		m.cycleSpendWindow()
+	case "d":
+		m.sinceInput = true
+		m.sinceDraft = m.spendSpec
+		m.notice = "since: RFC3339, YYYY-MM-DD, 7d, 3mo, today, mtd, ytd, or all; enter applies, esc cancels"
+	case "/":
+		m.searching = true
+		m.notice = "type to filter projects/models; enter applies, esc cancels"
+	case "e":
+		return m, m.export("json")
+	case "x":
+		return m, m.export("csv")
+	case "j", "down":
+		m.scrollSpend(1)
+	case "k", "up":
+		m.scrollSpend(-1)
+	case "pgdown", "ctrl+f":
+		m.scrollSpend(max(1, m.height-4))
+	case "pgup", "ctrl+b":
+		m.scrollSpend(-max(1, m.height-4))
+	case "g", "home":
+		m.spendOffset = 0
+	case "G", "end":
+		m.spendOffset = m.spendMaxOffset()
+	}
+	return m, nil
+}
+
+func (m Model) updateSinceInput(k tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	switch k.String() {
+	case "enter":
+		if err := m.setSpendSpec(strings.TrimSpace(m.sinceDraft)); err != nil {
+			m.notice = "since: " + err.Error()
+			return m, nil
+		}
+		m.sinceInput = false
+		m.tab = spendTab
+		m.notice = ""
+		m.rebuild()
+	case "esc":
+		m.sinceInput = false
+		m.sinceDraft = ""
+		m.notice = ""
+	case "backspace":
+		r := []rune(m.sinceDraft)
+		if len(r) > 0 {
+			m.sinceDraft = string(r[:len(r)-1])
+		}
+	default:
+		if k.Key().Text != "" {
+			m.sinceDraft += k.Key().Text
+		}
+	}
+	return m, nil
+}
+
+func (m *Model) cycleSpendWindow() {
+	_ = m.setSpendSpec(timerange.Next(m.spendSpec))
+	m.rebuild()
 }
 
 func (m Model) updateSearch(k tea.KeyPressMsg) (tea.Model, tea.Cmd) {
@@ -263,13 +385,18 @@ func flexibleColumnWidth(terminalWidth, fixedWidth, columnCount, minimum int) in
 	return max(minimum, available)
 }
 func (m *Model) rebuild() {
+	m.refreshSpendWindow()
 	q := strings.ToLower(m.search)
 	m.shown = nil
 	for _, s := range m.sessions {
 		if m.provider != "" && s.Provider != m.provider {
 			continue
 		}
-		if m.tab == 0 && !s.Active || m.tab == 1 && s.Active {
+		if m.tab == spendTab {
+			if !m.spendSince.IsZero() && s.UpdatedAt.Before(m.spendSince) {
+				continue
+			}
+		} else if m.tab == 0 && !s.Active || m.tab == 1 && s.Active {
 			continue
 		}
 		models := modelNames(s)
@@ -318,6 +445,29 @@ func (m *Model) rebuild() {
 		m.table.SetCursor(0)
 	}
 }
+// refreshSpendWindow re-resolves a relative spec on every rebuild so a window
+// such as "last 24 hours" keeps rolling while Tokenhawk stays open. A spec that
+// stops parsing keeps the last resolved bound rather than silently widening.
+func (m *Model) refreshSpendWindow() {
+	if since, err := timerange.Parse(m.spendSpec, time.Now(), false); err == nil {
+		m.spendSince = since
+	}
+}
+
+func (m *Model) scrollSpend(delta int) {
+	m.spendOffset = min(max(0, m.spendOffset+delta), m.spendMaxOffset())
+}
+
+func (m Model) spendMaxOffset() int {
+	return max(0, len(strings.Split(m.spendContent(), "\n"))-max(1, m.spendViewport()))
+}
+
+// spendViewport is the line budget left for the spend body once the dashboard
+// header, prompt, and footer have claimed their rows.
+func (m Model) spendViewport() int {
+	return max(3, m.height-m.chromeHeight())
+}
+
 func (m Model) export(format string) tea.Cmd {
 	return m.exportSessions(format, append([]core.Session(nil), m.shown...))
 }
@@ -344,6 +494,17 @@ func (m Model) View() tea.View {
 	return v
 }
 func (m Model) dashboard() string {
+	header, footer := m.chrome()
+	body := m.table.View()
+	if m.tab == spendTab {
+		body = m.spendBody()
+	}
+	return header + "\n\n" + body + "\n" + footer
+}
+
+// chrome renders the parts that frame every dashboard body, so the spend view
+// and the session table agree on how many rows are left for content.
+func (m Model) chrome() (string, string) {
 	active := 0
 	runningAgents := 0
 	for _, s := range m.sessions {
@@ -353,23 +514,31 @@ func (m Model) dashboard() string {
 		runningAgents += s.RunningSubagents()
 	}
 	cacheAlarms := activeCacheAlarms(m.sessions)
-	tabs := []string{"1 Active", "2 Inactive Sessions", "3 All Sessions"}
+	tabs := []string{"1 Active", "2 Inactive Sessions", "3 All Sessions", "4 Spend"}
 	tabs[m.tab] = titleStyle.Render(tabs[m.tab])
 	provider := "all"
 	if m.provider != "" {
 		provider = string(m.provider)
 	}
 	sortName := []string{"updated", "tokens", "cost"}[m.sortMode]
-	header := hawkBrand(m.width) + "\n" + strings.Join(tabs, "  ") + "\n" + fmt.Sprintf("%s active  •  %d inactive  •  %s subagents running  •  showing %d of %d sessions\nprovider: %s  •  sort: %s", good.Render(fmt.Sprint(active)), len(m.sessions)-active, good.Render(fmt.Sprint(runningAgents)), len(m.shown), len(m.sessions), provider, sortName)
+	header := hawkBrand(m.width) + "\n" + strings.Join(tabs, "  ") + "\n" + fmt.Sprintf("%s active  •  %d inactive  •  %s subagents running  •  showing %d of %d sessions\nprovider: %s  •  sort: %s  •  spend window: %s", good.Render(fmt.Sprint(active)), len(m.sessions)-active, good.Render(fmt.Sprint(runningAgents)), len(m.shown), len(m.sessions), provider, sortName, timerange.Label(m.spendSpec))
 	if cacheAlarms > 0 {
 		header += "\n" + alarmStyle.Render(fmt.Sprintf("⚠ %d high-input session(s) below 80%% cache ratio", cacheAlarms))
 	}
-	search := ""
-	if m.searching || m.search != "" {
-		search = "\n/ " + m.search + "▌"
+	if m.sinceInput {
+		header += "\nsince " + m.sinceDraft + "▌"
+	} else if m.searching || m.search != "" {
+		header += "\n/ " + m.search + "▌"
 	}
-	status := m.monitor.Status()
-	footer := fmt.Sprintf("i active/inactive  p provider  s sort  / filter  enter details  e JSON  x CSV  q quit  •  indexed %d files", status.Files)
+	var status monitor.Status
+	if m.monitor != nil {
+		status = m.monitor.Status()
+	}
+	keys := "i active/inactive  p provider  s sort  / filter  enter details  e JSON  x CSV  q quit"
+	if m.tab == spendTab {
+		keys = "t range  d since  1-3 sessions  p provider  / filter  ↑/↓ scroll  e JSON  x CSV  q quit"
+	}
+	footer := fmt.Sprintf("%s  •  indexed %d files", keys, status.Files)
 	if status.Scanning {
 		footer += " • scanning…"
 	}
@@ -379,7 +548,26 @@ func (m Model) dashboard() string {
 	if m.notice != "" {
 		footer += "\n" + m.notice
 	}
-	return header + search + "\n\n" + m.table.View() + "\n" + muted.Render(footer)
+	return header, muted.Render(footer)
+}
+
+func (m Model) chromeHeight() int {
+	header, footer := m.chrome()
+	return lipgloss.Height(header) + lipgloss.Height(footer) + 1
+}
+
+// spendBody renders the spend report clipped to the available rows, with the
+// same scroll affordance the session detail uses.
+func (m Model) spendBody() string {
+	content := m.spendContent()
+	lines := strings.Split(content, "\n")
+	visible := m.spendViewport()
+	if m.height <= 0 || len(lines) <= visible {
+		return content
+	}
+	offset := min(max(0, m.spendOffset), max(0, len(lines)-visible))
+	end := min(len(lines), offset+visible-1)
+	return strings.Join(lines[offset:end], "\n") + "\n" + muted.Render(fmt.Sprintf("↑/↓ scroll  %d–%d/%d", offset+1, end, len(lines)))
 }
 func (m Model) detailView() string {
 	content := m.detailContent()

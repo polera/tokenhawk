@@ -22,6 +22,7 @@ import (
 	"github.com/polera/tokenhawk/internal/pricing"
 	"github.com/polera/tokenhawk/internal/statusline"
 	"github.com/polera/tokenhawk/internal/store"
+	"github.com/polera/tokenhawk/internal/timerange"
 	"github.com/polera/tokenhawk/internal/tui"
 	"github.com/polera/tokenhawk/internal/upgrade"
 )
@@ -118,8 +119,8 @@ func Run(args []string, version string) error {
 	model := fs.String("model", "", "filter model")
 	project := fs.String("project", "", "filter project")
 	status := fs.String("status", "", "filter active or inactive")
-	since := fs.String("since", "", "filter updates since RFC3339 or YYYY-MM-DD")
-	until := fs.String("until", "", "filter updates through RFC3339 or YYYY-MM-DD")
+	since := fs.String("since", "", "spend window and export filter: RFC3339, YYYY-MM-DD, 7d, 3mo, today, mtd, ytd, or all")
+	until := fs.String("until", "", "filter updates through RFC3339, YYYY-MM-DD, or a relative offset")
 	formatDefault, formatHelp := "json", "export format: json or csv"
 	if command == "status" {
 		formatDefault, formatHelp = "plain", "status format: plain, ansi, tmux, or json"
@@ -211,20 +212,22 @@ func Run(args []string, version string) error {
 		fmt.Println(line)
 		return nil
 	}
+	now := time.Now()
+	sinceTime, err := timerange.Parse(*since, now, false)
+	if err != nil {
+		return fmt.Errorf("--since: %w", err)
+	}
+	// A bare --until date names a whole day, so it resolves to that day's end.
+	untilTime, err := timerange.Parse(*until, now, true)
+	if err != nil {
+		return fmt.Errorf("--until: %w", err)
+	}
 	if command == "export" {
 		if *output == "" {
 			return fmt.Errorf("--output is required for export")
 		}
 		if err = mon.Scan(ctx); err != nil {
 			return err
-		}
-		sinceTime, err := parseTime(*since, false)
-		if err != nil {
-			return fmt.Errorf("--since: %w", err)
-		}
-		untilTime, err := parseTime(*until, true)
-		if err != nil {
-			return fmt.Errorf("--until: %w", err)
 		}
 		sessions, err := mon.Sessions(ctx, core.Filter{Provider: core.Provider(*provider), Model: *model, Project: *project, Status: *status, Since: sinceTime, Until: untilTime})
 		if err != nil {
@@ -237,6 +240,13 @@ func Run(args []string, version string) error {
 		return nil
 	}
 	m := tui.New(mon)
+	if *since != "" {
+		// A --since on the interactive command is only meaningful as a spend
+		// window, so open the view it describes.
+		if m, err = m.WithSpendWindow(*since); err != nil {
+			return fmt.Errorf("--since: %w", err)
+		}
+	}
 	p := tea.NewProgram(m)
 	go func() { _ = mon.Run(ctx, func() { p.Send(tui.RefreshMsg{}) }) }()
 	_, err = p.Run()
@@ -350,21 +360,4 @@ func effectiveStatusFormat(format string) string {
 
 func supportedProvider(provider core.Provider) bool {
 	return provider == core.Claude || provider == core.Codex || provider == core.Gemini || provider == core.Pi || provider == core.OpenCode
-}
-
-func parseTime(v string, endOfDay bool) (time.Time, error) {
-	if v == "" {
-		return time.Time{}, nil
-	}
-	if t, err := time.Parse(time.RFC3339, v); err == nil {
-		return t, nil
-	}
-	t, err := time.ParseInLocation("2006-01-02", v, time.Local)
-	if err != nil {
-		return time.Time{}, fmt.Errorf("expected RFC3339 or YYYY-MM-DD")
-	}
-	if endOfDay {
-		t = t.Add(24*time.Hour - time.Nanosecond)
-	}
-	return t, nil
 }

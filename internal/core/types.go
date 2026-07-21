@@ -77,6 +77,10 @@ func (s Session) RunningSubagents() int {
 	return n
 }
 
+// SumUsage totals arbitrary usage rows, including rows collected across
+// sessions, with the same pricing-status rules a single session uses.
+func SumUsage(usage []Usage) Usage { return usageTotals(usage) }
+
 func usageTotals(usage []Usage) Usage {
 	var out Usage
 	if len(usage) == 0 {
