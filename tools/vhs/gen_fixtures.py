@@ -77,9 +77,9 @@ for project, model, inp, cread, ccreate, out, age, subs in claude:
 # ---- Codex sessions --------------------------------------------------------
 # fields: project, model, input, cached, output, reasoning, total, age_min
 codex = [
-    ("acme-api", "gpt-5.6-sol", 208_000, 41_890_000, 207_600, 64_300, 43_430_000, 12),
-    ("search-index", "gpt-5.3-codex", 74_000, 22_330_000, 76_200, 16_900, 22_840_000, 55),
-    ("infra-terraform", "gpt-5.6-sol", 31_000, 4_120_000, 18_400, 9_200, 4_310_000, 900),
+    ("acme-api", "gpt-5.6-sol", 43_222_400, 41_890_000, 207_600, 64_300, 43_430_000, 12),
+    ("search-index", "gpt-5.3-codex", 22_763_800, 22_330_000, 76_200, 16_900, 22_840_000, 55),
+    ("infra-terraform", "gpt-5.6-sol", 4_291_600, 4_120_000, 18_400, 9_200, 4_310_000, 900),
 ]
 for project, model, inp, cached, out, reason, total, age in codex:
     cwd = f"/home/dev/src/{project}"

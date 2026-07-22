@@ -18,6 +18,10 @@ Selecting a session opens a detail view that breaks out parent and subagent usag
 
 ![Tokenhawk session detail with parent and subagent breakdown](assets/detail.png)
 
+Option 4 opens a reporting view with synthetic token usage and spend grouped by provider, model, and day.
+
+![Tokenhawk reporting view with token usage and spend breakdowns](assets/reporting.png)
+
 The layout is responsive: narrow terminals collapse the table columns and the hawk-head wordmark to fit.
 
 ![Tokenhawk in a narrow terminal](assets/compact.png)
