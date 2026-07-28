@@ -288,10 +288,23 @@ func (m Model) modelPricingDetails(records []spendRecord) []string {
 			output += u.Reasoning
 			outputLabel = "output + reasoning"
 		}
+		long := min(u.CacheCreation1h, u.CacheCreation)
+		short := u.CacheCreation - long
 		out = append(out, fmt.Sprintf("estimate: %s input × %s/M  +  %s cached input × %s/M",
 			human(input), dollarRate(group.rate.Input), human(u.CachedInput), dollarRate(group.rate.CachedInput)))
-		terms := fmt.Sprintf("          %s cache write × %s/M  +  %s %s × %s/M",
-			human(u.CacheCreation), dollarRate(group.rate.CacheCreation), human(output), outputLabel, dollarRate(group.rate.Output))
+		// The two cache-write tiers bill differently, so only collapse them into
+		// one term when nothing was written at the 1-hour rate.
+		cacheTerms := fmt.Sprintf("%s cache write × %s/M", human(u.CacheCreation), dollarRate(group.rate.CacheCreation))
+		if long > 0 {
+			cacheTerms = fmt.Sprintf("%s cache write 5m × %s/M  +  %s cache write 1h × %s/M",
+				human(short), dollarRate(group.rate.CacheCreation), human(long), dollarRate(group.rate.LongCacheCreation()))
+			out = append(out, "          "+cacheTerms)
+			cacheTerms = ""
+		}
+		terms := fmt.Sprintf("          %s %s × %s/M", human(output), outputLabel, dollarRate(group.rate.Output))
+		if cacheTerms != "" {
+			terms = fmt.Sprintf("          %s  +  %s %s × %s/M", cacheTerms, human(output), outputLabel, dollarRate(group.rate.Output))
+		}
 		summary := fmt.Sprintf("$%.6f  ·  %s rate effective %s", group.rate.Estimate(u), group.provider, group.rate.EffectiveFrom)
 		if m.width > 0 && m.width < 120 {
 			out = append(out, terms, "          =  "+summary)

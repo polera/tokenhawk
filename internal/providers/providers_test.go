@@ -190,3 +190,62 @@ func mustWrite(t *testing.T, path, data string) {
 		t.Fatal(err)
 	}
 }
+
+// Claude Code writes one transcript line per content block, so a single billed
+// response repeats its usage verbatim across consecutive lines. Counting each
+// line roughly doubled every estimate.
+func TestClaudeRepeatedContentBlocksAreCountedOnce(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "session.jsonl")
+	line := `{"type":"assistant","sessionId":"c1","requestId":"req_1","timestamp":"2026-07-14T12:00:01Z","message":{"id":"msg_1","model":"claude-opus-4-8","usage":{"input_tokens":10,"cache_read_input_tokens":40,"cache_creation_input_tokens":10,"output_tokens":20}}}`
+	other := `{"type":"assistant","sessionId":"c1","requestId":"req_2","timestamp":"2026-07-14T12:00:02Z","message":{"id":"msg_2","model":"claude-opus-4-8","usage":{"input_tokens":1,"output_tokens":2}}}`
+	mustWrite(t, p, line+"\n"+line+"\n"+line+"\n"+other+"\n")
+	r, err := Parse(p, core.Claude, core.SourceState{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	u := r.Session.Usage[0]
+	if u.Input != 51 || u.CachedInput != 40 || u.CacheCreation != 10 || u.Output != 22 || u.Total != 83 {
+		t.Fatalf("repeated content blocks were double counted: %#v", u)
+	}
+}
+
+// A repeated run can straddle an incremental read, so the last counted response
+// has to survive in the parser state rather than resetting at the offset.
+func TestClaudeDeduplicationSurvivesIncrementalReads(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "session.jsonl")
+	line := `{"type":"assistant","sessionId":"c1","requestId":"req_1","timestamp":"2026-07-14T12:00:01Z","message":{"id":"msg_1","model":"claude-opus-4-8","usage":{"input_tokens":10,"output_tokens":20}}}`
+	mustWrite(t, p, line+"\n")
+	first, err := Parse(p, core.Claude, core.SourceState{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.OpenFile(p, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _ = f.WriteString(line + "\n")
+	_ = f.Close()
+	second, err := Parse(p, core.Claude, core.SourceState{SessionID: "c1", Offset: first.Offset, ParserState: first.ParserState})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(second.Session.Usage) != 0 {
+		t.Fatalf("a repeat across the read boundary was counted again: %#v", second.Session.Usage)
+	}
+}
+
+// The flat cache_creation_input_tokens field hides the TTL split, and the two
+// tiers bill at different rates.
+func TestClaudeSplitsCacheWritesByTTL(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "session.jsonl")
+	mustWrite(t, p, `{"type":"assistant","sessionId":"c1","requestId":"r1","timestamp":"2026-07-14T12:00:01Z","message":{"id":"m1","model":"claude-opus-4-8","usage":{"input_tokens":5,"cache_creation_input_tokens":1000,"cache_creation":{"ephemeral_5m_input_tokens":400,"ephemeral_1h_input_tokens":600},"output_tokens":7}}}
+`)
+	r, err := Parse(p, core.Claude, core.SourceState{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	u := r.Session.Usage[0]
+	if u.CacheCreation != 1000 || u.CacheCreation1h != 600 {
+		t.Fatalf("cache write TTL split not captured: %#v", u)
+	}
+}

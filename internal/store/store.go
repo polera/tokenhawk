@@ -39,9 +39,9 @@ func (s *Store) init() error {
 	_, err := s.db.Exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;
 CREATE TABLE IF NOT EXISTS sources(path TEXT PRIMARY KEY,provider TEXT NOT NULL,session_id TEXT NOT NULL,size INTEGER NOT NULL,mtime_ns INTEGER NOT NULL,offset INTEGER NOT NULL,parser_state TEXT NOT NULL DEFAULT '',kind TEXT NOT NULL DEFAULT 'session',parent_session_id TEXT NOT NULL DEFAULT '',agent_name TEXT NOT NULL DEFAULT '',agent_path TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS sessions(provider TEXT NOT NULL,id TEXT NOT NULL,project TEXT NOT NULL DEFAULT '',started_at INTEGER NOT NULL,updated_at INTEGER NOT NULL,source_health TEXT NOT NULL DEFAULT 'ok',PRIMARY KEY(provider,id));
-CREATE TABLE IF NOT EXISTS usage(provider TEXT NOT NULL,session_id TEXT NOT NULL,model TEXT NOT NULL,input INTEGER NOT NULL,cached_input INTEGER NOT NULL,cache_creation INTEGER NOT NULL,output INTEGER NOT NULL,reasoning INTEGER NOT NULL,tool INTEGER NOT NULL,total INTEGER NOT NULL,cost_usd REAL NOT NULL,pricing_status TEXT NOT NULL,PRIMARY KEY(provider,session_id,model));
+CREATE TABLE IF NOT EXISTS usage(provider TEXT NOT NULL,session_id TEXT NOT NULL,model TEXT NOT NULL,input INTEGER NOT NULL,cached_input INTEGER NOT NULL,cache_creation INTEGER NOT NULL,cache_creation_1h INTEGER NOT NULL DEFAULT 0,output INTEGER NOT NULL,reasoning INTEGER NOT NULL,tool INTEGER NOT NULL,total INTEGER NOT NULL,cost_usd REAL NOT NULL,pricing_status TEXT NOT NULL,PRIMARY KEY(provider,session_id,model));
 CREATE TABLE IF NOT EXISTS subagents(provider TEXT NOT NULL,parent_session_id TEXT NOT NULL,id TEXT NOT NULL,name TEXT NOT NULL DEFAULT '',agent_path TEXT NOT NULL DEFAULT '',started_at INTEGER NOT NULL,updated_at INTEGER NOT NULL,status TEXT NOT NULL DEFAULT 'unknown',source_health TEXT NOT NULL DEFAULT 'ok',PRIMARY KEY(provider,parent_session_id,id));
-CREATE TABLE IF NOT EXISTS subagent_usage(provider TEXT NOT NULL,parent_session_id TEXT NOT NULL,subagent_id TEXT NOT NULL,model TEXT NOT NULL,input INTEGER NOT NULL,cached_input INTEGER NOT NULL,cache_creation INTEGER NOT NULL,output INTEGER NOT NULL,reasoning INTEGER NOT NULL,tool INTEGER NOT NULL,total INTEGER NOT NULL,cost_usd REAL NOT NULL,pricing_status TEXT NOT NULL,PRIMARY KEY(provider,parent_session_id,subagent_id,model));
+CREATE TABLE IF NOT EXISTS subagent_usage(provider TEXT NOT NULL,parent_session_id TEXT NOT NULL,subagent_id TEXT NOT NULL,model TEXT NOT NULL,input INTEGER NOT NULL,cached_input INTEGER NOT NULL,cache_creation INTEGER NOT NULL,cache_creation_1h INTEGER NOT NULL DEFAULT 0,output INTEGER NOT NULL,reasoning INTEGER NOT NULL,tool INTEGER NOT NULL,total INTEGER NOT NULL,cost_usd REAL NOT NULL,pricing_status TEXT NOT NULL,PRIMARY KEY(provider,parent_session_id,subagent_id,model));
 CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS sessions_updated ON sessions(updated_at DESC);`)
 	if err != nil {
@@ -56,6 +56,15 @@ CREATE INDEX IF NOT EXISTS sessions_updated ON sessions(updated_at DESC);`)
 	} {
 		var added bool
 		if added, err = s.ensureSourceColumn(name, definition); err != nil {
+			return err
+		}
+		migrated = migrated || added
+	}
+	// Cache writes were counted as a single tier before the 1-hour rate was
+	// priced separately, so stored rows carry no split and must be reparsed.
+	for _, table := range []string{"usage", "subagent_usage"} {
+		var added bool
+		if added, err = s.ensureColumn(table, "cache_creation_1h", "INTEGER NOT NULL DEFAULT 0"); err != nil {
 			return err
 		}
 		migrated = migrated || added
@@ -94,7 +103,14 @@ func (s *Store) EnsurePricingFingerprint(fingerprint string) (bool, error) {
 }
 
 func (s *Store) ensureSourceColumn(name, definition string) (bool, error) {
-	rows, err := s.db.Query(`PRAGMA table_info(sources)`)
+	return s.ensureColumn("sources", name, definition)
+}
+
+// ensureColumn adds a column to an existing table. table and name are
+// package-internal literals, never user input, so they are safe to interpolate
+// where SQLite does not accept a bind parameter.
+func (s *Store) ensureColumn(table, name, definition string) (bool, error) {
+	rows, err := s.db.Query(`PRAGMA table_info(` + table + `)`)
 	if err != nil {
 		return false, err
 	}
@@ -119,7 +135,7 @@ func (s *Store) ensureSourceColumn(name, definition string) (bool, error) {
 	if found {
 		return false, nil
 	}
-	_, err = s.db.Exec(`ALTER TABLE sources ADD COLUMN ` + name + ` ` + definition)
+	_, err = s.db.Exec(`ALTER TABLE ` + table + ` ADD COLUMN ` + name + ` ` + definition)
 	return err == nil, err
 }
 
@@ -161,9 +177,9 @@ ON CONFLICT(provider,id) DO UPDATE SET project=CASE WHEN excluded.project<>'' TH
 	}
 	for _, u := range parsed.Session.Usage {
 		if parsed.Replace {
-			_, err = tx.ExecContext(ctx, `INSERT INTO usage(provider,session_id,model,input,cached_input,cache_creation,output,reasoning,tool,total,cost_usd,pricing_status) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)`, p, id, u.Model, u.Input, u.CachedInput, u.CacheCreation, u.Output, u.Reasoning, u.Tool, u.Total, u.CostUSD, u.PricingStatus)
+			_, err = tx.ExecContext(ctx, `INSERT INTO usage(provider,session_id,model,input,cached_input,cache_creation,cache_creation_1h,output,reasoning,tool,total,cost_usd,pricing_status) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`, p, id, u.Model, u.Input, u.CachedInput, u.CacheCreation, u.CacheCreation1h, u.Output, u.Reasoning, u.Tool, u.Total, u.CostUSD, u.PricingStatus)
 		} else {
-			_, err = tx.ExecContext(ctx, `INSERT INTO usage(provider,session_id,model,input,cached_input,cache_creation,output,reasoning,tool,total,cost_usd,pricing_status) VALUES(?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(provider,session_id,model) DO UPDATE SET input=input+excluded.input,cached_input=cached_input+excluded.cached_input,cache_creation=cache_creation+excluded.cache_creation,output=output+excluded.output,reasoning=reasoning+excluded.reasoning,tool=tool+excluded.tool,total=total+excluded.total,cost_usd=cost_usd+excluded.cost_usd,pricing_status=CASE WHEN usage.pricing_status='reported' AND excluded.pricing_status='reported' THEN 'reported' WHEN usage.pricing_status IN ('priced','reported') AND excluded.pricing_status IN ('priced','reported') THEN 'priced' ELSE 'unpriced' END`, p, id, u.Model, u.Input, u.CachedInput, u.CacheCreation, u.Output, u.Reasoning, u.Tool, u.Total, u.CostUSD, u.PricingStatus)
+			_, err = tx.ExecContext(ctx, `INSERT INTO usage(provider,session_id,model,input,cached_input,cache_creation,cache_creation_1h,output,reasoning,tool,total,cost_usd,pricing_status) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(provider,session_id,model) DO UPDATE SET input=input+excluded.input,cached_input=cached_input+excluded.cached_input,cache_creation=cache_creation+excluded.cache_creation,cache_creation_1h=cache_creation_1h+excluded.cache_creation_1h,output=output+excluded.output,reasoning=reasoning+excluded.reasoning,tool=tool+excluded.tool,total=total+excluded.total,cost_usd=cost_usd+excluded.cost_usd,pricing_status=CASE WHEN usage.pricing_status='reported' AND excluded.pricing_status='reported' THEN 'reported' WHEN usage.pricing_status IN ('priced','reported') AND excluded.pricing_status IN ('priced','reported') THEN 'priced' ELSE 'unpriced' END`, p, id, u.Model, u.Input, u.CachedInput, u.CacheCreation, u.CacheCreation1h, u.Output, u.Reasoning, u.Tool, u.Total, u.CostUSD, u.PricingStatus)
 		}
 		if err != nil {
 			return err
@@ -194,9 +210,9 @@ ON CONFLICT(provider,parent_session_id,id) DO UPDATE SET name=CASE WHEN excluded
 	}
 	for _, u := range a.Usage {
 		if parsed.Replace {
-			_, err = tx.ExecContext(ctx, `INSERT INTO subagent_usage(provider,parent_session_id,subagent_id,model,input,cached_input,cache_creation,output,reasoning,tool,total,cost_usd,pricing_status) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)`, p, parentID, id, u.Model, u.Input, u.CachedInput, u.CacheCreation, u.Output, u.Reasoning, u.Tool, u.Total, u.CostUSD, u.PricingStatus)
+			_, err = tx.ExecContext(ctx, `INSERT INTO subagent_usage(provider,parent_session_id,subagent_id,model,input,cached_input,cache_creation,cache_creation_1h,output,reasoning,tool,total,cost_usd,pricing_status) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)`, p, parentID, id, u.Model, u.Input, u.CachedInput, u.CacheCreation, u.CacheCreation1h, u.Output, u.Reasoning, u.Tool, u.Total, u.CostUSD, u.PricingStatus)
 		} else {
-			_, err = tx.ExecContext(ctx, `INSERT INTO subagent_usage(provider,parent_session_id,subagent_id,model,input,cached_input,cache_creation,output,reasoning,tool,total,cost_usd,pricing_status) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(provider,parent_session_id,subagent_id,model) DO UPDATE SET input=input+excluded.input,cached_input=cached_input+excluded.cached_input,cache_creation=cache_creation+excluded.cache_creation,output=output+excluded.output,reasoning=reasoning+excluded.reasoning,tool=tool+excluded.tool,total=total+excluded.total,cost_usd=cost_usd+excluded.cost_usd,pricing_status=CASE WHEN subagent_usage.pricing_status='reported' AND excluded.pricing_status='reported' THEN 'reported' WHEN subagent_usage.pricing_status IN ('priced','reported') AND excluded.pricing_status IN ('priced','reported') THEN 'priced' ELSE 'unpriced' END`, p, parentID, id, u.Model, u.Input, u.CachedInput, u.CacheCreation, u.Output, u.Reasoning, u.Tool, u.Total, u.CostUSD, u.PricingStatus)
+			_, err = tx.ExecContext(ctx, `INSERT INTO subagent_usage(provider,parent_session_id,subagent_id,model,input,cached_input,cache_creation,cache_creation_1h,output,reasoning,tool,total,cost_usd,pricing_status) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(provider,parent_session_id,subagent_id,model) DO UPDATE SET input=input+excluded.input,cached_input=cached_input+excluded.cached_input,cache_creation=cache_creation+excluded.cache_creation,cache_creation_1h=cache_creation_1h+excluded.cache_creation_1h,output=output+excluded.output,reasoning=reasoning+excluded.reasoning,tool=tool+excluded.tool,total=total+excluded.total,cost_usd=cost_usd+excluded.cost_usd,pricing_status=CASE WHEN subagent_usage.pricing_status='reported' AND excluded.pricing_status='reported' THEN 'reported' WHEN subagent_usage.pricing_status IN ('priced','reported') AND excluded.pricing_status IN ('priced','reported') THEN 'priced' ELSE 'unpriced' END`, p, parentID, id, u.Model, u.Input, u.CachedInput, u.CacheCreation, u.CacheCreation1h, u.Output, u.Reasoning, u.Tool, u.Total, u.CostUSD, u.PricingStatus)
 		}
 		if err != nil {
 			return err
@@ -308,7 +324,7 @@ func (s *Store) subagents(ctx context.Context, p core.Provider, parentID string,
 }
 
 func (s *Store) subagentUsage(ctx context.Context, p core.Provider, parentID, id string) ([]core.Usage, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT model,input,cached_input,cache_creation,output,reasoning,tool,total,cost_usd,pricing_status FROM subagent_usage WHERE provider=? AND parent_session_id=? AND subagent_id=? ORDER BY model`, string(p), parentID, id)
+	rows, err := s.db.QueryContext(ctx, `SELECT model,input,cached_input,cache_creation,cache_creation_1h,output,reasoning,tool,total,cost_usd,pricing_status FROM subagent_usage WHERE provider=? AND parent_session_id=? AND subagent_id=? ORDER BY model`, string(p), parentID, id)
 	if err != nil {
 		return nil, err
 	}
@@ -316,7 +332,7 @@ func (s *Store) subagentUsage(ctx context.Context, p core.Provider, parentID, id
 	var out []core.Usage
 	for rows.Next() {
 		var u core.Usage
-		if err = rows.Scan(&u.Model, &u.Input, &u.CachedInput, &u.CacheCreation, &u.Output, &u.Reasoning, &u.Tool, &u.Total, &u.CostUSD, &u.PricingStatus); err != nil {
+		if err = rows.Scan(&u.Model, &u.Input, &u.CachedInput, &u.CacheCreation, &u.CacheCreation1h, &u.Output, &u.Reasoning, &u.Tool, &u.Total, &u.CostUSD, &u.PricingStatus); err != nil {
 			return nil, err
 		}
 		out = append(out, u)
@@ -325,7 +341,7 @@ func (s *Store) subagentUsage(ctx context.Context, p core.Provider, parentID, id
 }
 
 func (s *Store) usage(ctx context.Context, p core.Provider, id string) ([]core.Usage, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT model,input,cached_input,cache_creation,output,reasoning,tool,total,cost_usd,pricing_status FROM usage WHERE provider=? AND session_id=? ORDER BY model`, string(p), id)
+	rows, err := s.db.QueryContext(ctx, `SELECT model,input,cached_input,cache_creation,cache_creation_1h,output,reasoning,tool,total,cost_usd,pricing_status FROM usage WHERE provider=? AND session_id=? ORDER BY model`, string(p), id)
 	if err != nil {
 		return nil, err
 	}
@@ -333,7 +349,7 @@ func (s *Store) usage(ctx context.Context, p core.Provider, id string) ([]core.U
 	var out []core.Usage
 	for rows.Next() {
 		var u core.Usage
-		if err = rows.Scan(&u.Model, &u.Input, &u.CachedInput, &u.CacheCreation, &u.Output, &u.Reasoning, &u.Tool, &u.Total, &u.CostUSD, &u.PricingStatus); err != nil {
+		if err = rows.Scan(&u.Model, &u.Input, &u.CachedInput, &u.CacheCreation, &u.CacheCreation1h, &u.Output, &u.Reasoning, &u.Tool, &u.Total, &u.CostUSD, &u.PricingStatus); err != nil {
 			return nil, err
 		}
 		out = append(out, u)

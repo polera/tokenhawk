@@ -13,16 +13,21 @@ const (
 )
 
 type Usage struct {
-	Model         string  `json:"model"`
-	Input         int64   `json:"input_tokens"`
-	CachedInput   int64   `json:"cached_input_tokens"`
-	CacheCreation int64   `json:"cache_creation_tokens"`
-	Output        int64   `json:"output_tokens"`
-	Reasoning     int64   `json:"reasoning_tokens"`
-	Tool          int64   `json:"tool_tokens"`
-	Total         int64   `json:"total_tokens"`
-	CostUSD       float64 `json:"estimated_cost_usd"`
-	PricingStatus string  `json:"pricing_status"`
+	Model       string `json:"model"`
+	Input       int64  `json:"input_tokens"`
+	CachedInput int64  `json:"cached_input_tokens"`
+	// CacheCreation counts every cache-write token. CacheCreation1h is the
+	// subset written with a 1-hour TTL, which providers bill at a higher rate
+	// than the 5-minute default; keeping the total whole leaves token displays
+	// and Total unchanged while letting pricing split the two rates.
+	CacheCreation   int64   `json:"cache_creation_tokens"`
+	CacheCreation1h int64   `json:"cache_creation_1h_tokens"`
+	Output          int64   `json:"output_tokens"`
+	Reasoning       int64   `json:"reasoning_tokens"`
+	Tool            int64   `json:"tool_tokens"`
+	Total           int64   `json:"total_tokens"`
+	CostUSD         float64 `json:"estimated_cost_usd"`
+	PricingStatus   string  `json:"pricing_status"`
 }
 
 type Session struct {
@@ -93,6 +98,7 @@ func usageTotals(usage []Usage) Usage {
 		out.Input += u.Input
 		out.CachedInput += u.CachedInput
 		out.CacheCreation += u.CacheCreation
+		out.CacheCreation1h += u.CacheCreation1h
 		out.Output += u.Output
 		out.Reasoning += u.Reasoning
 		out.Tool += u.Tool

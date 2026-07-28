@@ -159,3 +159,56 @@ func TestCatalogPricesCurrentIndexedModelIDs(t *testing.T) {
 		t.Fatalf("Sonnet 5 post-introductory rate = %f, want 3", sonnetStandard.CostUSD)
 	}
 }
+
+// Cache writes held for an hour bill at twice the base input rate rather than
+// the 1.25x charged for the 5-minute default.
+func TestLongCacheWritesUseTheHourlyRate(t *testing.T) {
+	c, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	u := c.Price(core.Claude, at, core.Usage{Model: "claude-opus-4-8", CacheCreation: 1_000_000, CacheCreation1h: 600_000})
+	want := 400_000.0/1e6*6.25 + 600_000.0/1e6*10
+	if math.Abs(u.CostUSD-want) > 1e-9 {
+		t.Fatalf("got %f want %f", u.CostUSD, want)
+	}
+	flat := c.Price(core.Claude, at, core.Usage{Model: "claude-opus-4-8", CacheCreation: 1_000_000})
+	if math.Abs(flat.CostUSD-6.25) > 1e-9 {
+		t.Fatalf("5-minute writes should stay at the base cache rate: %f", flat.CostUSD)
+	}
+}
+
+// A rate that predates the split, such as a user override file, must fall back
+// to its single cache rate instead of pricing hourly writes at zero.
+func TestRateWithoutHourlyCacheFallsBackToTheShortRate(t *testing.T) {
+	r := Rate{Provider: core.Claude, CacheCreation: 6.25}
+	got := r.Estimate(core.Usage{CacheCreation: 1_000_000, CacheCreation1h: 1_000_000})
+	if math.Abs(got-6.25) > 1e-9 {
+		t.Fatalf("hourly writes were dropped: %f", got)
+	}
+}
+
+// Every Claude model Claude Code can currently emit needs a rate, or its spend
+// silently reports as zero.
+func TestCatalogCoversCurrentClaudeModels(t *testing.T) {
+	c, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 7, 28, 0, 0, 0, 0, time.UTC)
+	for _, model := range []string{
+		"claude-opus-5", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6",
+		"claude-opus-4-5-20251101", "claude-sonnet-5", "claude-sonnet-4-6",
+		"claude-sonnet-4-5-20250929", "claude-haiku-4-5-20251001",
+	} {
+		rate, ok := c.Lookup(core.Claude, at, model)
+		if !ok {
+			t.Errorf("%s has no catalog rate", model)
+			continue
+		}
+		if rate.CacheCreation1h <= rate.CacheCreation {
+			t.Errorf("%s hourly cache rate %v does not exceed the 5-minute rate %v", model, rate.CacheCreation1h, rate.CacheCreation)
+		}
+	}
+}

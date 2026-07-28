@@ -68,7 +68,7 @@ func writeJSON(w io.Writer, s []core.Session) error {
 func writeCSV(w io.Writer, s []core.Session) error {
 	c := csv.NewWriter(w)
 	defer c.Flush()
-	header := []string{"provider", "session_id", "project", "started_at", "updated_at", "active", "row_type", "subagent_id", "subagent_name", "agent_path", "agent_status", "agent_running", "running_subagents", "total_subagents", "model", "input_tokens", "cached_input_tokens", "cache_creation_tokens", "output_tokens", "reasoning_tokens", "tool_tokens", "total_tokens", "estimated_cost_usd", "pricing_status", "source_health"}
+	header := []string{"provider", "session_id", "project", "started_at", "updated_at", "active", "row_type", "subagent_id", "subagent_name", "agent_path", "agent_status", "agent_running", "running_subagents", "total_subagents", "model", "input_tokens", "cached_input_tokens", "cache_creation_tokens", "cache_creation_1h_tokens", "output_tokens", "reasoning_tokens", "tool_tokens", "total_tokens", "estimated_cost_usd", "pricing_status", "source_health"}
 	if err := c.Write(header); err != nil {
 		return err
 	}
@@ -97,6 +97,6 @@ func usageRow(x core.Session, a *core.Subagent, u core.Usage) []string {
 		started, updated, active, rowType = a.StartedAt, a.UpdatedAt, a.Running, "subagent"
 		subagentID, name, agentPath, status, running, health = a.ID, a.Name, a.AgentPath, a.Status, strconv.FormatBool(a.Running), a.SourceHealth
 	}
-	return []string{string(x.Provider), x.ID, x.Project, started.UTC().Format(time.RFC3339Nano), updated.UTC().Format(time.RFC3339Nano), strconv.FormatBool(active), rowType, subagentID, name, agentPath, status, running, strconv.Itoa(x.RunningSubagents()), strconv.Itoa(len(x.Subagents)), u.Model, i(u.Input), i(u.CachedInput), i(u.CacheCreation), i(u.Output), i(u.Reasoning), i(u.Tool), i(u.Total), strconv.FormatFloat(u.CostUSD, 'f', 6, 64), u.PricingStatus, health}
+	return []string{string(x.Provider), x.ID, x.Project, started.UTC().Format(time.RFC3339Nano), updated.UTC().Format(time.RFC3339Nano), strconv.FormatBool(active), rowType, subagentID, name, agentPath, status, running, strconv.Itoa(x.RunningSubagents()), strconv.Itoa(len(x.Subagents)), u.Model, i(u.Input), i(u.CachedInput), i(u.CacheCreation), i(u.CacheCreation1h), i(u.Output), i(u.Reasoning), i(u.Tool), i(u.Total), strconv.FormatFloat(u.CostUSD, 'f', 6, 64), u.PricingStatus, health}
 }
 func i(v int64) string { return strconv.FormatInt(v, 10) }

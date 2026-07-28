@@ -274,3 +274,32 @@ func key(s string) tea.KeyPressMsg {
 	}
 	return tea.KeyPressMsg{Code: rune(s[len(s)-1]), Mod: tea.ModCtrl}
 }
+
+// The two cache-write tiers bill differently, so an estimate that includes
+// hourly writes has to show both rates rather than one blended line.
+func TestSpendBreakdownSeparatesCacheWriteTiers(t *testing.T) {
+	prices, err := pricing.Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := New(nil, prices)
+	m.width, m.height = 140, 40
+	m.resize()
+	m.sessions = []core.Session{{
+		Provider: core.Claude, ID: "a", UpdatedAt: time.Now(),
+		Usage: []core.Usage{{Model: "claude-opus-4-8", CacheCreation: 1_000_000, CacheCreation1h: 600_000,
+			Total: 1_000_000, PricingStatus: "priced"}},
+	}}
+	m.tab = spendTab
+	m.rebuild()
+	view := m.spendContent()
+	for _, want := range []string{
+		"400.0k cache write 5m × $6.25/M",
+		"600.0k cache write 1h × $10/M",
+		"$8.500000",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("spend estimate missing %q:\n%s", want, view)
+		}
+	}
+}

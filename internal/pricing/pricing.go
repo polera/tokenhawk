@@ -21,7 +21,20 @@ type Rate struct {
 	Input         float64       `json:"input_per_million"`
 	CachedInput   float64       `json:"cached_input_per_million"`
 	CacheCreation float64       `json:"cache_creation_per_million"`
-	Output        float64       `json:"output_per_million"`
+	// CacheCreation1h prices cache writes held for an hour rather than the
+	// 5-minute default. Rates that omit it fall back to CacheCreation so an
+	// older override file under-reports nothing.
+	CacheCreation1h float64 `json:"cache_creation_1h_per_million"`
+	Output          float64 `json:"output_per_million"`
+}
+
+// LongCacheCreation is the 1-hour cache-write rate, defaulting to the
+// 5-minute rate when a catalog entry does not distinguish the two.
+func (r Rate) LongCacheCreation() float64 {
+	if r.CacheCreation1h > 0 {
+		return r.CacheCreation1h
+	}
+	return r.CacheCreation
 }
 
 type file struct {
@@ -44,7 +57,16 @@ func (r Rate) Estimate(u core.Usage) float64 {
 	if r.Provider == core.Gemini {
 		billedOutput += u.Reasoning
 	}
-	return (float64(standardInput)*r.Input + float64(u.CachedInput)*r.CachedInput + float64(u.CacheCreation)*r.CacheCreation + float64(billedOutput)*r.Output) / 1_000_000
+	longCache := u.CacheCreation1h
+	if longCache > u.CacheCreation {
+		longCache = u.CacheCreation
+	}
+	shortCache := u.CacheCreation - longCache
+	return (float64(standardInput)*r.Input +
+		float64(u.CachedInput)*r.CachedInput +
+		float64(shortCache)*r.CacheCreation +
+		float64(longCache)*r.LongCacheCreation() +
+		float64(billedOutput)*r.Output) / 1_000_000
 }
 
 func Load(override string) (*Catalog, error) {

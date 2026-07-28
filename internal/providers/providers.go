@@ -309,16 +309,67 @@ type claudeRecord struct {
 	SessionID string    `json:"sessionId"`
 	AgentID   string    `json:"agentId"`
 	CWD       string    `json:"cwd"`
+	RequestID string    `json:"requestId"`
 	Timestamp time.Time `json:"timestamp"`
 	Message   struct {
+		ID    string `json:"id"`
 		Model string `json:"model"`
 		Usage struct {
 			Input       int64 `json:"input_tokens"`
 			CacheRead   int64 `json:"cache_read_input_tokens"`
 			CacheCreate int64 `json:"cache_creation_input_tokens"`
 			Output      int64 `json:"output_tokens"`
+			// CacheCreation breaks the cache-write total down by TTL. The two
+			// tiers bill at different rates, and the flat
+			// cache_creation_input_tokens field does not distinguish them.
+			CacheCreation struct {
+				Ephemeral5m int64 `json:"ephemeral_5m_input_tokens"`
+				Ephemeral1h int64 `json:"ephemeral_1h_input_tokens"`
+			} `json:"cache_creation"`
 		} `json:"usage"`
 	} `json:"message"`
+}
+
+// claudeState carries the last counted assistant message across incremental
+// reads so resuming mid-file does not re-count a run that spans the boundary.
+type claudeState struct {
+	LastKey string `json:"last_key"`
+}
+
+// usageKey identifies the API response a record belongs to. Claude Code writes
+// one line per content block, so a single billed response commonly appears
+// several times in a row with the usage figures repeated verbatim on each line.
+func (r claudeRecord) usageKey() string {
+	if r.Message.ID == "" && r.RequestID == "" {
+		return ""
+	}
+	return r.Message.ID + "\x00" + r.RequestID
+}
+
+// addClaudeUsage counts one record unless it repeats the response counted just
+// before it. Repeats are always contiguous, so comparing against the previous
+// key is enough; carrying a full set of seen keys would grow without bound.
+func addClaudeUsage(usage map[string]*core.Usage, r claudeRecord, last *string) {
+	if r.Message.Model == "" {
+		return
+	}
+	t := r.Message.Usage
+	if r.Type != "assistant" && t.Input+t.Output+t.CacheRead+t.CacheCreate == 0 {
+		return
+	}
+	if key := r.usageKey(); key != "" {
+		if key == *last {
+			return
+		}
+		*last = key
+	}
+	u := get(usage, r.Message.Model)
+	u.Input += t.Input + t.CacheRead
+	u.CachedInput += t.CacheRead
+	u.CacheCreation += t.CacheCreate
+	u.CacheCreation1h += min(t.CacheCreation.Ephemeral1h, t.CacheCreate)
+	u.Output += t.Output
+	u.Total += t.Input + t.CacheRead + t.CacheCreate + t.Output
 }
 
 func parseClaude(path string, previous core.SourceState) (core.Parsed, error) {
@@ -327,6 +378,8 @@ func parseClaude(path string, previous core.SourceState) (core.Parsed, error) {
 	}
 	s := core.Session{Provider: core.Claude, ID: previous.SessionID, SourcePath: path, SourceHealth: "ok"}
 	usage := map[string]*core.Usage{}
+	var state claudeState
+	_ = json.Unmarshal([]byte(previous.ParserState), &state)
 	offset, err := scanJSONL(path, previous.Offset, func(line []byte) error {
 		var r claudeRecord
 		if err := json.Unmarshal(line, &r); err != nil {
@@ -339,26 +392,25 @@ func parseClaude(path string, previous core.SourceState) (core.Parsed, error) {
 			s.Project = r.CWD
 		}
 		times(&s, r.Timestamp)
-		if r.Message.Model != "" && (r.Type == "assistant" || r.Message.Usage.Input+r.Message.Usage.Output+r.Message.Usage.CacheRead+r.Message.Usage.CacheCreate > 0) {
-			u := get(usage, r.Message.Model)
-			u.Input += r.Message.Usage.Input + r.Message.Usage.CacheRead
-			u.CachedInput += r.Message.Usage.CacheRead
-			u.CacheCreation += r.Message.Usage.CacheCreate
-			u.Output += r.Message.Usage.Output
-			u.Total += r.Message.Usage.Input + r.Message.Usage.CacheRead + r.Message.Usage.CacheCreate + r.Message.Usage.Output
-		}
+		addClaudeUsage(usage, r, &state.LastKey)
 		return nil
 	})
 	if err != nil {
 		return core.Parsed{}, err
 	}
 	finalize(path, &s, usage)
-	return core.Parsed{Session: s, Provider: core.Claude, SourcePath: path, Offset: offset, Replace: previous.Offset == 0}, nil
+	b, err := json.Marshal(state)
+	if err != nil {
+		return core.Parsed{}, err
+	}
+	return core.Parsed{Session: s, Provider: core.Claude, SourcePath: path, Offset: offset, ParserState: string(b), Replace: previous.Offset == 0}, nil
 }
 
 func parseClaudeSubagent(path string, previous core.SourceState) (core.Parsed, error) {
 	a := core.Subagent{ID: previous.SessionID, ParentID: previous.ParentID, Name: previous.Name, AgentPath: previous.AgentPath, SourceHealth: "ok", Status: "unknown"}
 	usage := map[string]*core.Usage{}
+	var state claudeState
+	_ = json.Unmarshal([]byte(previous.ParserState), &state)
 	offset, err := scanJSONL(path, previous.Offset, func(line []byte) error {
 		var r claudeRecord
 		if err := json.Unmarshal(line, &r); err != nil {
@@ -371,14 +423,7 @@ func parseClaudeSubagent(path string, previous core.SourceState) (core.Parsed, e
 			a.ParentID = r.SessionID
 		}
 		timesSubagent(&a, r.Timestamp)
-		if r.Message.Model != "" && (r.Type == "assistant" || r.Message.Usage.Input+r.Message.Usage.Output+r.Message.Usage.CacheRead+r.Message.Usage.CacheCreate > 0) {
-			u := get(usage, r.Message.Model)
-			u.Input += r.Message.Usage.Input + r.Message.Usage.CacheRead
-			u.CachedInput += r.Message.Usage.CacheRead
-			u.CacheCreation += r.Message.Usage.CacheCreate
-			u.Output += r.Message.Usage.Output
-			u.Total += r.Message.Usage.Input + r.Message.Usage.CacheRead + r.Message.Usage.CacheCreate + r.Message.Usage.Output
-		}
+		addClaudeUsage(usage, r, &state.LastKey)
 		return nil
 	})
 	if err != nil {
@@ -401,7 +446,11 @@ func parseClaudeSubagent(path string, previous core.SourceState) (core.Parsed, e
 		}
 	}
 	finalizeSubagent(path, &a, usage)
-	return core.Parsed{Subagent: &a, Provider: core.Claude, SourcePath: path, Offset: offset, Replace: previous.Offset == 0}, nil
+	b, err := json.Marshal(state)
+	if err != nil {
+		return core.Parsed{}, err
+	}
+	return core.Parsed{Subagent: &a, Provider: core.Claude, SourcePath: path, Offset: offset, ParserState: string(b), Replace: previous.Offset == 0}, nil
 }
 
 type codexState struct {
