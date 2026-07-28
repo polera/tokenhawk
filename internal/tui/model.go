@@ -14,6 +14,7 @@ import (
 	"github.com/polera/tokenhawk/internal/core"
 	exporter "github.com/polera/tokenhawk/internal/export"
 	"github.com/polera/tokenhawk/internal/monitor"
+	"github.com/polera/tokenhawk/internal/pricing"
 	"github.com/polera/tokenhawk/internal/timerange"
 )
 
@@ -29,6 +30,7 @@ type exportMsg struct {
 
 type Model struct {
 	monitor                      *monitor.Monitor
+	prices                       *pricing.Catalog
 	table                        table.Model
 	sessions, shown              []core.Session
 	width, height, tab, sortMode int
@@ -58,9 +60,12 @@ const (
 	defaultSpendSpec     string  = "7d"
 )
 
-func New(mon *monitor.Monitor) Model {
+func New(mon *monitor.Monitor, catalogs ...*pricing.Catalog) Model {
 	t := table.New(table.WithFocused(true), table.WithHeight(15))
 	m := Model{monitor: mon, table: t}
+	if len(catalogs) > 0 {
+		m.prices = catalogs[0]
+	}
 	// The built-in default is a constant this package controls, so it parses.
 	_ = m.setSpendSpec(defaultSpendSpec)
 	return m
@@ -445,6 +450,7 @@ func (m *Model) rebuild() {
 		m.table.SetCursor(0)
 	}
 }
+
 // refreshSpendWindow re-resolves a relative spec on every rebuild so a window
 // such as "last 24 hours" keeps rolling while Tokenhawk stays open. A spec that
 // stops parsing keeps the last resolved bound rather than silently widening.

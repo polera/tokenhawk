@@ -239,7 +239,7 @@ func Run(args []string, version string) error {
 		fmt.Printf("exported %d sessions to %s\n", len(sessions), *output)
 		return nil
 	}
-	m := tui.New(mon)
+	m := tui.New(mon, prices)
 	if *since != "" {
 		// A --since on the interactive command is only meaningful as a spend
 		// window, so open the view it describes.

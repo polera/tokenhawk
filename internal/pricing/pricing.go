@@ -34,6 +34,19 @@ type Catalog struct {
 	rates       []Rate
 }
 
+// Estimate applies a rate to usage in API billing units.
+func (r Rate) Estimate(u core.Usage) float64 {
+	standardInput := u.Input - u.CachedInput
+	if standardInput < 0 {
+		standardInput = 0
+	}
+	billedOutput := u.Output
+	if r.Provider == core.Gemini {
+		billedOutput += u.Reasoning
+	}
+	return (float64(standardInput)*r.Input + float64(u.CachedInput)*r.CachedInput + float64(u.CacheCreation)*r.CacheCreation + float64(billedOutput)*r.Output) / 1_000_000
+}
+
 func Load(override string) (*Catalog, error) {
 	var base file
 	if err := json.Unmarshal(bundled, &base); err != nil {
@@ -76,11 +89,14 @@ func Load(override string) (*Catalog, error) {
 func (c *Catalog) Version() string     { return c.version }
 func (c *Catalog) Fingerprint() string { return c.fingerprint }
 
-func (c *Catalog) Price(provider core.Provider, at time.Time, u core.Usage) core.Usage {
+// Lookup returns the exact effective-dated catalog rate used to price a model.
+// Keeping this selection in one place lets reports explain an estimate without
+// duplicating (and potentially drifting from) the pricing rules.
+func (c *Catalog) Lookup(provider core.Provider, at time.Time, model string) (Rate, bool) {
 	var selected *Rate
 	for i := range c.rates {
 		r := &c.rates[i]
-		if r.Provider != provider || !modelMatch(r.Model, u.Model) {
+		if r.Provider != provider || !modelMatch(r.Model, model) {
 			continue
 		}
 		eff, err := time.Parse("2006-01-02", r.EffectiveFrom)
@@ -92,18 +108,18 @@ func (c *Catalog) Price(provider core.Provider, at time.Time, u core.Usage) core
 		}
 	}
 	if selected == nil {
+		return Rate{}, false
+	}
+	return *selected, true
+}
+
+func (c *Catalog) Price(provider core.Provider, at time.Time, u core.Usage) core.Usage {
+	selected, ok := c.Lookup(provider, at, u.Model)
+	if !ok {
 		u.PricingStatus = "unpriced"
 		return u
 	}
-	standardInput := u.Input - u.CachedInput
-	if standardInput < 0 {
-		standardInput = 0
-	}
-	billedOutput := u.Output
-	if provider == core.Gemini {
-		billedOutput += u.Reasoning
-	}
-	u.CostUSD = (float64(standardInput)*selected.Input + float64(u.CachedInput)*selected.CachedInput + float64(u.CacheCreation)*selected.CacheCreation + float64(billedOutput)*selected.Output) / 1_000_000
+	u.CostUSD = selected.Estimate(u)
 	u.PricingStatus = "priced"
 	return u
 }

@@ -212,7 +212,19 @@ TOTAL  tokens 17.30M  in 16.71M  cached 15.99M (96%)  out 238.3k  i:o 70.1:1
 BY PROVIDER
   codex  ████████████    12 sess  tokens 10.25M  in 10.14M  cached 9.42M  out 117.5k  i:o 86.3:1  $11.8310
   claude ████████····    11 sess  tokens  7.04M  in  6.57M  cached 6.57M  out 120.8k  i:o 54.4:1  $8.3536
+
+BY MODEL
+  gpt-5.6-sol ████████████  8 sess  tokens 8.20M  in 8.08M  cached 7.70M  out 90.0k  i:o 89.8:1  $8.4500
+      estimate: 380.0k input × $5/M  +  7.70M cached input × $0.5/M
+                0 cache write × $6.25/M  +  90.0k output × $30/M
+                =  $8.450000  ·  codex rate effective 2026-06-26
 ```
+
+Estimated model rows show the uncached input, cached input, cache-write, and
+output quantities alongside the effective catalog rates used for each. If a
+window crosses a price change, Tokenhawk shows a separate rate breakdown for
+each effective period. Gemini reasoning tokens are included in its billed
+output quantity.
 
 `t` cycles the built-in windows: last 24 hours, 7 days, 30 days, month to date, and all time. `d` accepts a typed window, and `--since` opens Tokenhawk directly on one:
 

@@ -7,12 +7,17 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"github.com/polera/tokenhawk/internal/core"
+	"github.com/polera/tokenhawk/internal/pricing"
 )
 
 func spendModel(t *testing.T) Model {
 	t.Helper()
 	now := time.Now()
-	m := New(nil)
+	prices, err := pricing.Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := New(nil, prices)
 	m.sessions = []core.Session{
 		{Provider: core.Claude, ID: "today-a", Project: "/work/a", Active: true, UpdatedAt: now.Add(-2 * time.Hour),
 			Usage:     []core.Usage{{Model: "claude-opus-4-8", Input: 500_000, CachedInput: 450_000, Output: 20_000, Total: 520_000, CostUSD: 4, PricingStatus: "priced"}},
@@ -25,6 +30,80 @@ func spendModel(t *testing.T) Model {
 	m.width, m.height = 140, 40
 	m.resize()
 	return m
+}
+
+func TestSpendModelShowsTokensAndEffectivePricingBehindEstimate(t *testing.T) {
+	m := spendModel(t)
+	m.tab = spendTab
+	m.rebuild()
+	view := m.spendContent()
+	for _, want := range []string{
+		"50.0k input × $5/M",
+		"450.0k cached input × $0.5/M",
+		"0 cache write × $6.25/M",
+		"20.0k output × $25/M",
+		"effective 2026-05-28",
+		"10.0k input × $1.25/M",
+		"90.0k cached input × $0.125/M",
+		"5.0k output × $10/M",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("spend estimate missing %q:\n%s", want, view)
+		}
+	}
+	// The synthetic haiku identifier is intentionally not in the exact-match
+	// catalog, so no guessed rate should be displayed for it.
+	if strings.Contains(view, "claude-haiku-4-5\n      estimate:") {
+		t.Fatalf("unpriced model received a guessed breakdown:\n%s", view)
+	}
+}
+
+func TestSpendPricingBreakdownWrapsForNarrowTerminals(t *testing.T) {
+	m := spendModel(t)
+	m.width = 80
+	m.tab = spendTab
+	m.rebuild()
+	for _, group := range groupByModel(m.shown) {
+		if group.name != "claude-opus-4-8" {
+			continue
+		}
+		details := m.modelPricingDetails(group.records)
+		if len(details) != 3 || !strings.Contains(details[1], "20.0k output × $25/M") ||
+			!strings.Contains(details[2], "=  $0.975000  ·  claude rate effective 2026-05-28") {
+			t.Fatalf("narrow pricing breakdown was not split cleanly: %#v", details)
+		}
+		return
+	}
+	t.Fatal("opus model group not found")
+}
+
+func TestSpendModelSeparatesEffectiveRatesAndBillsGeminiReasoningAsOutput(t *testing.T) {
+	prices, err := pricing.Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := New(nil, prices)
+	m.sessions = []core.Session{
+		{Provider: core.Claude, UpdatedAt: time.Date(2026, 8, 31, 0, 0, 0, 0, time.UTC), Usage: []core.Usage{{Model: "claude-sonnet-5", Input: 100, Output: 10, PricingStatus: "priced"}}},
+		{Provider: core.Claude, UpdatedAt: time.Date(2026, 9, 2, 0, 0, 0, 0, time.UTC), Usage: []core.Usage{{Model: "claude-sonnet-5", Input: 200, Output: 20, PricingStatus: "priced"}}},
+		{Provider: core.Gemini, UpdatedAt: time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC), Usage: []core.Usage{{Model: "gemini-2.5-pro", Output: 30, Reasoning: 20, PricingStatus: "priced"}}},
+	}
+	m.shown = m.sessions
+	m.width = 140
+	view := m.spendContent()
+	for _, want := range []string{
+		"100 input × $2/M",
+		"10 output × $10/M",
+		"effective 2026-06-30",
+		"200 input × $3/M",
+		"20 output × $15/M",
+		"effective 2026-09-01",
+		"50 output + reasoning × $10/M",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("effective-rate breakdown missing %q:\n%s", want, view)
+		}
+	}
 }
 
 func TestSpendWindowExcludesSessionsUpdatedBeforeSince(t *testing.T) {

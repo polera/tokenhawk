@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/polera/tokenhawk/internal/core"
+	"github.com/polera/tokenhawk/internal/pricing"
 	"github.com/polera/tokenhawk/internal/timerange"
 )
 
@@ -17,7 +18,16 @@ const spendDayRows = 14
 type spendGroup struct {
 	name     string
 	sessions int
-	usage    []core.Usage
+	records  []spendRecord
+}
+
+// spendRecord retains the provider and timestamp alongside a usage row. Those
+// fields are needed to identify the exact effective-dated rate behind an
+// estimate; a summed dollar amount alone cannot recover that provenance.
+type spendRecord struct {
+	provider core.Provider
+	at       time.Time
+	usage    core.Usage
 }
 
 type spendGroups struct {
@@ -29,7 +39,7 @@ func newSpendGroups() *spendGroups {
 	return &spendGroups{byName: map[string]*spendGroup{}}
 }
 
-func (g *spendGroups) add(name string, sessions int, usage ...core.Usage) {
+func (g *spendGroups) add(name string, sessions int, records ...spendRecord) {
 	entry, ok := g.byName[name]
 	if !ok {
 		entry = &spendGroup{name: name}
@@ -37,7 +47,7 @@ func (g *spendGroups) add(name string, sessions int, usage ...core.Usage) {
 		g.order = append(g.order, name)
 	}
 	entry.sessions += sessions
-	entry.usage = append(entry.usage, usage...)
+	entry.records = append(entry.records, records...)
 }
 
 func (g *spendGroups) list() []spendGroup {
@@ -58,10 +68,31 @@ func sessionUsage(s core.Session) []core.Usage {
 	return out
 }
 
+func sessionSpendRecords(s core.Session) []spendRecord {
+	out := make([]spendRecord, 0, len(s.Usage))
+	for _, u := range s.Usage {
+		out = append(out, spendRecord{provider: s.Provider, at: s.UpdatedAt, usage: u})
+	}
+	for _, a := range s.Subagents {
+		for _, u := range a.Usage {
+			out = append(out, spendRecord{provider: s.Provider, at: a.UpdatedAt, usage: u})
+		}
+	}
+	return out
+}
+
+func recordUsage(records []spendRecord) []core.Usage {
+	out := make([]core.Usage, 0, len(records))
+	for _, record := range records {
+		out = append(out, record.usage)
+	}
+	return out
+}
+
 func groupByProvider(sessions []core.Session) []spendGroup {
 	g := newSpendGroups()
 	for _, s := range sessions {
-		g.add(string(s.Provider), 1, sessionUsage(s)...)
+		g.add(string(s.Provider), 1, sessionSpendRecords(s)...)
 	}
 	out := g.list()
 	sortByCost(out)
@@ -72,7 +103,8 @@ func groupByModel(sessions []core.Session) []spendGroup {
 	g := newSpendGroups()
 	for _, s := range sessions {
 		seen := map[string]bool{}
-		for _, u := range sessionUsage(s) {
+		for _, record := range sessionSpendRecords(s) {
+			u := record.usage
 			name := u.Model
 			if name == "" {
 				name = "unknown"
@@ -82,7 +114,7 @@ func groupByModel(sessions []core.Session) []spendGroup {
 				seen[name] = true
 				sessions = 1
 			}
-			g.add(name, sessions, u)
+			g.add(name, sessions, record)
 		}
 	}
 	out := g.list()
@@ -96,7 +128,7 @@ func groupByModel(sessions []core.Session) []spendGroup {
 func groupByDay(sessions []core.Session) []spendGroup {
 	g := newSpendGroups()
 	for _, s := range sessions {
-		g.add(s.UpdatedAt.Local().Format("2006-01-02"), 1, sessionUsage(s)...)
+		g.add(s.UpdatedAt.Local().Format("2006-01-02"), 1, sessionSpendRecords(s)...)
 	}
 	out := g.list()
 	sort.SliceStable(out, func(i, j int) bool { return out[i].name > out[j].name })
@@ -105,7 +137,7 @@ func groupByDay(sessions []core.Session) []spendGroup {
 
 func sortByCost(groups []spendGroup) {
 	sort.SliceStable(groups, func(i, j int) bool {
-		a, b := core.SumUsage(groups[i].usage), core.SumUsage(groups[j].usage)
+		a, b := core.SumUsage(recordUsage(groups[i].records)), core.SumUsage(recordUsage(groups[j].records))
 		if a.CostUSD != b.CostUSD {
 			return a.CostUSD > b.CostUSD
 		}
@@ -139,9 +171,9 @@ func (m Model) spendContent() string {
 		fmt.Fprintf(&b, "%s\n", cacheAlarmText("this window", total))
 	}
 	b.WriteString("\n")
-	b.WriteString(m.spendSection("BY PROVIDER", groupByProvider(m.shown), 0, "provider"))
-	b.WriteString(m.spendSection("BY MODEL", groupByModel(m.shown), 0, "model"))
-	b.WriteString(m.spendSection("BY DAY", groupByDay(m.shown), spendDayRows, "earlier day"))
+	b.WriteString(m.spendSection("BY PROVIDER", groupByProvider(m.shown), 0, "provider", false))
+	b.WriteString(m.spendSection("BY MODEL", groupByModel(m.shown), 0, "model", true))
+	b.WriteString(m.spendSection("BY DAY", groupByDay(m.shown), spendDayRows, "earlier day", false))
 	return b.String()
 }
 
@@ -155,7 +187,7 @@ func spendUsage(sessions []core.Session) []core.Usage {
 
 // spendSection renders one aggregation with a cost bar scaled to the largest
 // row. limit caps the rows and reports the remainder; 0 means no cap.
-func (m Model) spendSection(title string, groups []spendGroup, limit int, noun string) string {
+func (m Model) spendSection(title string, groups []spendGroup, limit int, noun string, showPricing bool) string {
 	if len(groups) == 0 {
 		return ""
 	}
@@ -163,7 +195,7 @@ func (m Model) spendSection(title string, groups []spendGroup, limit int, noun s
 	b.WriteString(titleStyle.Render(title) + "\n")
 	peak := 0.0
 	for _, g := range groups {
-		if weight := spendWeight(core.SumUsage(g.usage)); weight > peak {
+		if weight := spendWeight(core.SumUsage(recordUsage(g.records))); weight > peak {
 			peak = weight
 		}
 	}
@@ -179,7 +211,7 @@ func (m Model) spendSection(title string, groups []spendGroup, limit int, noun s
 		shown = shown[:limit]
 	}
 	for _, g := range shown {
-		u := core.SumUsage(g.usage)
+		u := core.SumUsage(recordUsage(g.records))
 		name := g.name
 		if r := []rune(name); len(r) > nameWidth {
 			name = string(r[:nameWidth-1]) + "…"
@@ -197,12 +229,85 @@ func (m Model) spendSection(title string, groups []spendGroup, limit int, noun s
 		line += fmt.Sprintf("  i:o %s", ratioText(u.Input, u.Output))
 		line += "  " + costText(u)
 		b.WriteString(line + "\n")
+		if showPricing {
+			for _, detail := range m.modelPricingDetails(g.records) {
+				b.WriteString(muted.Render("      "+detail) + "\n")
+			}
+		}
 	}
 	if rest := len(groups) - len(shown); rest > 0 {
 		b.WriteString(muted.Render(fmt.Sprintf("  … %d more %s(s) not shown", rest, noun)) + "\n")
 	}
 	b.WriteString("\n")
 	return b.String()
+}
+
+type spendRateGroup struct {
+	rate     pricing.Rate
+	provider core.Provider
+	usage    []core.Usage
+}
+
+// modelPricingDetails explains priced model rows in the same units the catalog
+// uses. Multiple lines are possible when a window crosses an effective-date
+// change or the same model identifier appears under different providers.
+func (m Model) modelPricingDetails(records []spendRecord) []string {
+	if m.prices == nil {
+		return nil
+	}
+	var order []string
+	groups := map[string]*spendRateGroup{}
+	for _, record := range records {
+		if record.usage.PricingStatus != "priced" {
+			continue
+		}
+		rate, ok := m.prices.Lookup(record.provider, record.at, record.usage.Model)
+		if !ok {
+			continue
+		}
+		key := fmt.Sprintf("%s\x00%s\x00%s", record.provider, rate.Model, rate.EffectiveFrom)
+		group, exists := groups[key]
+		if !exists {
+			group = &spendRateGroup{rate: rate, provider: record.provider}
+			groups[key] = group
+			order = append(order, key)
+		}
+		group.usage = append(group.usage, record.usage)
+	}
+	sort.SliceStable(order, func(i, j int) bool {
+		return groups[order[i]].rate.EffectiveFrom < groups[order[j]].rate.EffectiveFrom
+	})
+	out := make([]string, 0, len(order)*2)
+	for _, key := range order {
+		group := groups[key]
+		u := core.SumUsage(group.usage)
+		input := max(int64(0), u.Input-u.CachedInput)
+		output := u.Output
+		outputLabel := "output"
+		if group.provider == core.Gemini && u.Reasoning > 0 {
+			output += u.Reasoning
+			outputLabel = "output + reasoning"
+		}
+		out = append(out, fmt.Sprintf("estimate: %s input × %s/M  +  %s cached input × %s/M",
+			human(input), dollarRate(group.rate.Input), human(u.CachedInput), dollarRate(group.rate.CachedInput)))
+		terms := fmt.Sprintf("          %s cache write × %s/M  +  %s %s × %s/M",
+			human(u.CacheCreation), dollarRate(group.rate.CacheCreation), human(output), outputLabel, dollarRate(group.rate.Output))
+		summary := fmt.Sprintf("$%.6f  ·  %s rate effective %s", group.rate.Estimate(u), group.provider, group.rate.EffectiveFrom)
+		if m.width > 0 && m.width < 120 {
+			out = append(out, terms, "          =  "+summary)
+		} else {
+			out = append(out, terms+"  =  "+summary)
+		}
+	}
+	return out
+}
+
+func dollarRate(rate float64) string {
+	return "$" + compactRate(rate)
+}
+
+func compactRate(rate float64) string {
+	return strings.TrimRight(strings.TrimRight(fmt.Sprintf("%.4f", rate), "0"), ".")
 }
 
 // spendWeight ranks a bucket by cost, falling back to tokens so unpriced
