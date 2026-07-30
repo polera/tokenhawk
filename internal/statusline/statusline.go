@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"strings"
+	"time"
 
 	"github.com/polera/tokenhawk/internal/core"
 )
@@ -49,6 +51,102 @@ func ParseClaude(r io.Reader) (Selector, error) {
 		project = input.CWD
 	}
 	return Selector{Provider: core.Claude, SessionID: input.SessionID, Project: project}, nil
+}
+
+// AgyInput is the documented Antigravity CLI status-line payload subset used
+// by Tokenhawk. Fields such as account email and quota are intentionally not
+// represented, so the decoder never retains them.
+type AgyInput struct {
+	SessionID      string `json:"session_id"`
+	ConversationID string `json:"conversation_id"`
+	CWD            string `json:"cwd"`
+	Model          struct {
+		ID          string `json:"id"`
+		DisplayName string `json:"display_name"`
+	} `json:"model"`
+	Workspace struct {
+		CurrentDir string `json:"current_dir"`
+		ProjectDir string `json:"project_dir"`
+	} `json:"workspace"`
+	ContextWindow struct {
+		TotalInputTokens  int64 `json:"total_input_tokens"`
+		TotalOutputTokens int64 `json:"total_output_tokens"`
+		CurrentUsage      struct {
+			InputTokens              int64 `json:"input_tokens"`
+			OutputTokens             int64 `json:"output_tokens"`
+			CacheCreationInputTokens int64 `json:"cache_creation_input_tokens"`
+			CacheReadInputTokens     int64 `json:"cache_read_input_tokens"`
+		} `json:"current_usage"`
+	} `json:"context_window"`
+}
+
+// ParseAgy converts AGY's native status payload into a cumulative live session
+// snapshot. AGY currently exposes cumulative input/output but only the current
+// cache counters, so CachedInput is the best lower bound available.
+func ParseAgy(r io.Reader) (core.Session, error) {
+	var input AgyInput
+	if err := json.NewDecoder(r).Decode(&input); err != nil {
+		return core.Session{}, fmt.Errorf("read AGY status-line input: %w", err)
+	}
+	id := input.ConversationID
+	if id == "" {
+		id = input.SessionID
+	}
+	if id == "" {
+		return core.Session{}, fmt.Errorf("read AGY status-line input: missing conversation_id")
+	}
+	project := input.Workspace.ProjectDir
+	if project == "" {
+		project = input.Workspace.CurrentDir
+	}
+	if project == "" {
+		project = input.CWD
+	}
+	model := input.Model.ID
+	if model == "" {
+		model = input.Model.DisplayName
+	}
+	model = normalizeAgyModel(model)
+
+	totalInput := max(input.ContextWindow.TotalInputTokens, 0)
+	totalOutput := max(input.ContextWindow.TotalOutputTokens, 0)
+	current := input.ContextWindow.CurrentUsage
+	if totalInput == 0 {
+		totalInput = max(current.InputTokens, 0) + max(current.CacheReadInputTokens, 0)
+	}
+	if totalOutput == 0 {
+		totalOutput = max(current.OutputTokens, 0)
+	}
+	cached := min(max(current.CacheReadInputTokens, 0), totalInput)
+	now := time.Now()
+	return core.Session{
+		Provider:     core.Agy,
+		ID:           id,
+		Project:      project,
+		StartedAt:    now,
+		UpdatedAt:    now,
+		Active:       true,
+		SourceHealth: "ok",
+		Usage: []core.Usage{{
+			Model:         model,
+			Input:         totalInput,
+			CachedInput:   cached,
+			CacheCreation: max(current.CacheCreationInputTokens, 0),
+			Output:        totalOutput,
+			Total:         totalInput + totalOutput,
+		}},
+	}, nil
+}
+
+func normalizeAgyModel(model string) string {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		return "unknown"
+	}
+	if i := strings.LastIndex(model, " ("); i >= 0 && strings.HasSuffix(model, ")") {
+		model = model[:i]
+	}
+	return strings.ToLower(strings.Join(strings.Fields(model), "-"))
 }
 
 // Select returns one session, never a sum across sessions. Exact session ID is

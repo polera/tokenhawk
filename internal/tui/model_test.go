@@ -166,6 +166,7 @@ func TestResumeCommandsUseProviderSyntaxAndProjectDirectory(t *testing.T) {
 		{core.Claude, "cd '/work/team' && claude --resume 'session-id'"},
 		{core.Codex, "cd '/work/team' && codex resume 'session-id'"},
 		{core.Gemini, "cd '/work/team' && gemini --resume 'session-id'"},
+		{core.Agy, "cd '/work/team' && agy --conversation 'session-id'"},
 		{core.Pi, "cd '/work/team' && pi --session 'session-id'"},
 		{core.OpenCode, "cd '/work/team' && opencode --session 'session-id'"},
 	} {

@@ -19,6 +19,52 @@ func TestParseClaudeUsesStableSessionAndWorkspace(t *testing.T) {
 	}
 }
 
+func TestParseAgyUsesConversationAndCumulativeTokens(t *testing.T) {
+	session, err := ParseAgy(strings.NewReader(`{
+		"session_id":"legacy-id",
+		"conversation_id":"agy-123",
+		"cwd":"/fallback",
+		"model":{"id":"Gemini 3.5 Flash (High)"},
+		"workspace":{"project_dir":"/work/tokenhawk"},
+		"context_window":{
+			"total_input_tokens":88244,
+			"total_output_tokens":61074,
+			"current_usage":{
+				"input_tokens":63382,
+				"output_tokens":346,
+				"cache_creation_input_tokens":10,
+				"cache_read_input_tokens":20857
+			}
+		}
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session.Provider != core.Agy || session.ID != "agy-123" || session.Project != "/work/tokenhawk" || !session.Active {
+		t.Fatalf("unexpected AGY session: %#v", session)
+	}
+	usage := session.Usage[0]
+	if usage.Model != "gemini-3.5-flash" || usage.Input != 88244 || usage.CachedInput != 20857 || usage.CacheCreation != 10 || usage.Output != 61074 || usage.Total != 149318 {
+		t.Fatalf("unexpected AGY usage: %#v", usage)
+	}
+}
+
+func TestParseAgyFallsBackToCurrentUsage(t *testing.T) {
+	session, err := ParseAgy(strings.NewReader(`{
+		"session_id":"agy-legacy",
+		"model":{"display_name":"Claude Sonnet 4.6 (Thinking)"},
+		"workspace":{"current_dir":"/work/agy"},
+		"context_window":{"current_usage":{"input_tokens":100,"output_tokens":20,"cache_read_input_tokens":40}}
+	}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	usage := session.Usage[0]
+	if session.ID != "agy-legacy" || usage.Model != "claude-sonnet-4.6" || usage.Input != 140 || usage.CachedInput != 40 || usage.Output != 20 || usage.Total != 160 {
+		t.Fatalf("unexpected AGY fallback: %#v", session)
+	}
+}
+
 func TestSelectReturnsOneExactSession(t *testing.T) {
 	sessions := []core.Session{
 		{Provider: core.Claude, ID: "wanted", Project: "/work/tokenhawk", UpdatedAt: time.Unix(1, 0), Usage: []core.Usage{{Input: 10}}},

@@ -8,6 +8,7 @@ const (
 	Claude   Provider = "claude"
 	Codex    Provider = "codex"
 	Gemini   Provider = "gemini"
+	Agy      Provider = "agy"
 	Pi       Provider = "pi"
 	OpenCode Provider = "opencode"
 )

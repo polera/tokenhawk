@@ -118,6 +118,34 @@ func TestGeminiTokenCategories(t *testing.T) {
 	}
 }
 
+func TestAgyConversationDiscoveryPreservesStatusUsage(t *testing.T) {
+	root := t.TempDir()
+	conversations := filepath.Join(root, "conversations")
+	if err := os.MkdirAll(conversations, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(conversations, "agy-session.db")
+	mustWrite(t, path, "sqlite placeholder")
+
+	paths, err := Discover("", "", "", root, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(paths) != 1 || paths[0] != path {
+		t.Fatalf("unexpected AGY discovery: %#v", paths)
+	}
+	if provider := ProviderFor(path, "", "", "", root, "", ""); provider != core.Agy {
+		t.Fatalf("AGY path classified as %q", provider)
+	}
+	parsed, err := Parse(path, core.Agy, core.SourceState{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Session.ID != "agy-session" || parsed.Provider != core.Agy || parsed.Replace {
+		t.Fatalf("unexpected AGY parse: %#v", parsed)
+	}
+}
+
 func TestPiReportedUsageAndCost(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "session.jsonl")
 	mustWrite(t, p, `{"type":"session","version":3,"id":"pi-session","timestamp":"2026-07-14T12:00:00Z","cwd":"/work/pi"}

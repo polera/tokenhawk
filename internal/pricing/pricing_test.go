@@ -46,6 +46,22 @@ func TestLookupReturnsTheEffectiveRateUsedByPrice(t *testing.T) {
 	}
 }
 
+func TestAgyUsesUnderlyingModelProviderRate(t *testing.T) {
+	c, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 7, 29, 0, 0, 0, 0, time.UTC)
+	gemini := c.Price(core.Agy, at, core.Usage{Model: "gemini-3.5-flash", Input: 1_000_000})
+	if gemini.PricingStatus != "priced" || gemini.CostUSD != 1.5 {
+		t.Fatalf("AGY Gemini usage was not priced with Gemini rates: %#v", gemini)
+	}
+	claude := c.Price(core.Agy, at, core.Usage{Model: "claude-sonnet-4-6", Input: 1_000_000})
+	if claude.PricingStatus != "priced" || claude.CostUSD != 3 {
+		t.Fatalf("AGY Claude usage was not priced with Claude rates: %#v", claude)
+	}
+}
+
 func TestGeminiThoughtsAreBilledAsOutput(t *testing.T) {
 	c, _ := Load("")
 	u := c.Price(core.Gemini, time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), core.Usage{Model: "gemini-2.5-pro", Output: 100, Reasoning: 50})

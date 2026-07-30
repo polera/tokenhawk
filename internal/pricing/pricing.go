@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/polera/tokenhawk/internal/core"
@@ -115,24 +116,35 @@ func (c *Catalog) Fingerprint() string { return c.fingerprint }
 // Keeping this selection in one place lets reports explain an estimate without
 // duplicating (and potentially drifting from) the pricing rules.
 func (c *Catalog) Lookup(provider core.Provider, at time.Time, model string) (Rate, bool) {
-	var selected *Rate
-	for i := range c.rates {
-		r := &c.rates[i]
-		if r.Provider != provider || !modelMatch(r.Model, model) {
-			continue
-		}
-		eff, err := time.Parse("2006-01-02", r.EffectiveFrom)
-		if err != nil || eff.After(at) {
-			continue
-		}
-		if selected == nil || r.EffectiveFrom > selected.EffectiveFrom {
-			selected = r
+	lookupProviders := []core.Provider{provider}
+	if provider == core.Agy {
+		switch {
+		case strings.HasPrefix(model, "gemini-"):
+			lookupProviders = append(lookupProviders, core.Gemini)
+		case strings.HasPrefix(model, "claude-"):
+			lookupProviders = append(lookupProviders, core.Claude)
 		}
 	}
-	if selected == nil {
-		return Rate{}, false
+	for _, lookupProvider := range lookupProviders {
+		var selected *Rate
+		for i := range c.rates {
+			r := &c.rates[i]
+			if r.Provider != lookupProvider || !modelMatch(r.Model, model) {
+				continue
+			}
+			eff, err := time.Parse("2006-01-02", r.EffectiveFrom)
+			if err != nil || eff.After(at) {
+				continue
+			}
+			if selected == nil || r.EffectiveFrom > selected.EffectiveFrom {
+				selected = r
+			}
+		}
+		if selected != nil {
+			return *selected, true
+		}
 	}
-	return *selected, true
+	return Rate{}, false
 }
 
 func (c *Catalog) Price(provider core.Provider, at time.Time, u core.Usage) core.Usage {

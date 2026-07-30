@@ -13,8 +13,8 @@ import (
 // existing tmux session it temporarily replaces status-right; otherwise it
 // creates and attaches to a dedicated session.
 func Wrap(provider string, providerArgs []string) error {
-	if provider != "claude" && provider != "codex" && provider != "gemini" && provider != "pi" && provider != "opencode" {
-		return fmt.Errorf("unsupported provider %q (expected claude, codex, gemini, pi, or opencode)", provider)
+	if provider != "claude" && provider != "codex" && provider != "gemini" && provider != "agy" && provider != "pi" && provider != "opencode" {
+		return fmt.Errorf("unsupported provider %q (expected claude, codex, gemini, agy, pi, or opencode)", provider)
 	}
 	client, err := exec.LookPath(provider)
 	if err != nil {

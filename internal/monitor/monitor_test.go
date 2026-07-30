@@ -167,6 +167,70 @@ func TestPiReportedCostSurvivesIncrementalIndexing(t *testing.T) {
 	}
 }
 
+func TestAgyScanPreservesStatusLineSnapshot(t *testing.T) {
+	root := t.TempDir()
+	agyDir := filepath.Join(root, "antigravity-cli")
+	conversations := filepath.Join(agyDir, "conversations")
+	if err := os.MkdirAll(conversations, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(conversations, "agy-session.db")
+	mustWriteFile(t, path, "first")
+
+	index, err := store.Open(filepath.Join(root, "index.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer index.Close()
+	prices, err := pricing.Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := New(config.Config{AgyDir: agyDir, ActiveWindow: time.Hour}, index, prices)
+	ctx := context.Background()
+	if err = m.ScanProvider(ctx, core.Agy); err != nil {
+		t.Fatal(err)
+	}
+
+	stat, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	snapshot := core.Parsed{
+		Session: core.Session{
+			Provider: core.Agy, ID: "agy-session", Project: "/work/agy",
+			StartedAt: now, UpdatedAt: now, SourceHealth: "ok",
+			Usage: []core.Usage{{Model: "gemini-3.5-flash", Input: 100, CachedInput: 40, Output: 20, Total: 120, PricingStatus: "priced"}},
+		},
+		Provider: core.Agy, SourcePath: path, Offset: stat.Size(), Replace: true,
+	}
+	if err = index.Apply(ctx, snapshot, stat); err != nil {
+		t.Fatal(err)
+	}
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = file.WriteString("second"); err != nil {
+		_ = file.Close()
+		t.Fatal(err)
+	}
+	if err = file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err = m.ScanProvider(ctx, core.Agy); err != nil {
+		t.Fatal(err)
+	}
+	sessions, err := m.Sessions(ctx, core.Filter{Provider: core.Agy})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sessions) != 1 || sessions[0].Project != "/work/agy" || sessions[0].Totals().Total != 120 {
+		t.Fatalf("AGY scan discarded status snapshot: %#v", sessions)
+	}
+}
+
 func mustWriteFile(t *testing.T, path, content string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {

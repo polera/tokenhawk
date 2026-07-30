@@ -331,6 +331,8 @@ func (m *Model) cycleProvider() {
 	case core.Codex:
 		m.provider = core.Gemini
 	case core.Gemini:
+		m.provider = core.Agy
+	case core.Agy:
 		m.provider = core.Pi
 	case core.Pi:
 		m.provider = core.OpenCode
@@ -698,6 +700,8 @@ func resumeCommand(s core.Session) string {
 		command = "codex resume " + shellQuote(s.ID)
 	case core.Gemini:
 		command = "gemini --resume " + shellQuote(s.ID)
+	case core.Agy:
+		command = "agy --conversation " + shellQuote(s.ID)
 	case core.Pi:
 		command = "pi --session " + shellQuote(s.ID)
 	case core.OpenCode:

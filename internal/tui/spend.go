@@ -284,7 +284,7 @@ func (m Model) modelPricingDetails(records []spendRecord) []string {
 		input := max(int64(0), u.Input-u.CachedInput)
 		output := u.Output
 		outputLabel := "output"
-		if group.provider == core.Gemini && u.Reasoning > 0 {
+		if group.rate.Provider == core.Gemini && u.Reasoning > 0 {
 			output += u.Reasoning
 			outputLabel = "output + reasoning"
 		}

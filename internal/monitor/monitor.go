@@ -61,9 +61,9 @@ func (m *Monitor) scan(ctx context.Context, only core.Provider) error {
 	if rebuilt {
 		only = ""
 	}
-	claudeDir, codexDir, geminiDir, piDir, openCodeDB := m.cfg.ClaudeDir, m.cfg.CodexDir, m.cfg.GeminiDir, m.cfg.PiDir, m.cfg.OpenCodeDB
+	claudeDir, codexDir, geminiDir, agyDir, piDir, openCodeDB := m.cfg.ClaudeDir, m.cfg.CodexDir, m.cfg.GeminiDir, m.cfg.AgyDir, m.cfg.PiDir, m.cfg.OpenCodeDB
 	if only != "" {
-		claudeDir, codexDir, geminiDir, piDir, openCodeDB = "", "", "", "", ""
+		claudeDir, codexDir, geminiDir, agyDir, piDir, openCodeDB = "", "", "", "", "", ""
 		switch only {
 		case core.Claude:
 			claudeDir = m.cfg.ClaudeDir
@@ -71,6 +71,8 @@ func (m *Monitor) scan(ctx context.Context, only core.Provider) error {
 			codexDir = m.cfg.CodexDir
 		case core.Gemini:
 			geminiDir = m.cfg.GeminiDir
+		case core.Agy:
+			agyDir = m.cfg.AgyDir
 		case core.Pi:
 			piDir = m.cfg.PiDir
 		case core.OpenCode:
@@ -79,7 +81,7 @@ func (m *Monitor) scan(ctx context.Context, only core.Provider) error {
 			return fmt.Errorf("unsupported provider %q", only)
 		}
 	}
-	discovered, err := providers.Discover(claudeDir, codexDir, geminiDir, piDir, openCodeDB)
+	discovered, err := providers.Discover(claudeDir, codexDir, geminiDir, agyDir, piDir, openCodeDB)
 	if err != nil {
 		return err
 	}
@@ -95,7 +97,7 @@ func (m *Monitor) scan(ctx context.Context, only core.Provider) error {
 		if err != nil {
 			continue
 		}
-		provider := providers.ProviderFor(path, claudeDir, codexDir, geminiDir, piDir, openCodeDB)
+		provider := providers.ProviderFor(path, claudeDir, codexDir, geminiDir, agyDir, piDir, openCodeDB)
 		if provider == core.OpenCode {
 			records, sources, parseErr := providers.ParseOpenCodeDB(path, func(source string, updated time.Time) bool {
 				previous, sourceErr := m.store.Source(source)
@@ -203,7 +205,7 @@ func (m *Monitor) Run(ctx context.Context, onUpdate func()) error {
 	}
 }
 func (m *Monitor) addDirs(w *fsnotify.Watcher) {
-	roots := []string{m.cfg.ClaudeDir, m.cfg.CodexDir, m.cfg.GeminiDir, m.cfg.PiDir}
+	roots := []string{m.cfg.ClaudeDir, m.cfg.CodexDir, m.cfg.GeminiDir, m.cfg.AgyDir, m.cfg.PiDir}
 	if m.cfg.OpenCodeDB != "" {
 		roots = append(roots, filepath.Dir(m.cfg.OpenCodeDB))
 	}

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime/debug"
 	"strings"
 	"syscall"
@@ -53,13 +54,13 @@ func Run(args []string, version string) error {
 			command = args[0]
 			args = args[1:]
 			if len(args) == 0 || strings.HasPrefix(args[0], "-") {
-				return fmt.Errorf("statusline requires a provider: claude, codex, gemini, pi, or opencode")
+				return fmt.Errorf("statusline requires a provider: claude, codex, gemini, agy, pi, or opencode")
 			}
 			statuslineProvider = args[0]
 			args = args[1:]
 		case "wrap":
 			if len(args) < 2 {
-				return fmt.Errorf("wrap requires a provider: claude, codex, gemini, pi, or opencode")
+				return fmt.Errorf("wrap requires a provider: claude, codex, gemini, agy, pi, or opencode")
 			}
 			return integration.Wrap(args[1], args[2:])
 		case "version":
@@ -98,8 +99,8 @@ func Run(args []string, version string) error {
 		fmt.Fprintln(fs.Output(), "usage: tokenhawk [tui flags]")
 		fmt.Fprintln(fs.Output(), "       tokenhawk export [flags]")
 		fmt.Fprintln(fs.Output(), "       tokenhawk status [flags]")
-		fmt.Fprintln(fs.Output(), "       tokenhawk statusline <claude|codex|gemini|pi|opencode> [flags]")
-		fmt.Fprintln(fs.Output(), "       tokenhawk wrap <claude|codex|gemini|pi|opencode> [client arguments]")
+		fmt.Fprintln(fs.Output(), "       tokenhawk statusline <claude|codex|gemini|agy|pi|opencode> [flags]")
+		fmt.Fprintln(fs.Output(), "       tokenhawk wrap <claude|codex|gemini|agy|pi|opencode> [client arguments]")
 		fmt.Fprintln(fs.Output(), "       tokenhawk upgrade")
 		fmt.Fprintln(fs.Output(), "       tokenhawk version")
 		fs.PrintDefaults()
@@ -108,6 +109,7 @@ func Run(args []string, version string) error {
 	fs.StringVar(&cfg.ClaudeDir, "claude-dir", cfg.ClaudeDir, "Claude projects directory")
 	fs.StringVar(&cfg.CodexDir, "codex-dir", cfg.CodexDir, "Codex home directory")
 	fs.StringVar(&cfg.GeminiDir, "gemini-dir", cfg.GeminiDir, "Gemini tmp directory")
+	fs.StringVar(&cfg.AgyDir, "agy-dir", cfg.AgyDir, "Antigravity CLI data directory")
 	fs.StringVar(&cfg.PiDir, "pi-dir", cfg.PiDir, "Pi sessions directory")
 	fs.StringVar(&cfg.OpenCodeDB, "opencode-db", cfg.OpenCodeDB, "OpenCode SQLite database")
 	fs.StringVar(&cfg.DBPath, "db", cfg.DBPath, "index database")
@@ -164,7 +166,7 @@ func Run(args []string, version string) error {
 	if command == "status" || command == "statusline" {
 		selector := statusline.Selector{Provider: core.Provider(*provider), SessionID: *sessionID, Project: *project, Status: *status}
 		if selector.Provider != "" && !supportedProvider(selector.Provider) {
-			return fmt.Errorf("unsupported provider %q (expected claude, codex, gemini, pi, or opencode)", selector.Provider)
+			return fmt.Errorf("unsupported provider %q (expected claude, codex, gemini, agy, pi, or opencode)", selector.Provider)
 		}
 		if selector.Status != "" && selector.Status != "active" && selector.Status != "inactive" {
 			return fmt.Errorf("unsupported status %q (expected active or inactive)", selector.Status)
@@ -180,6 +182,41 @@ func Run(args []string, version string) error {
 			if selector.Project == "" {
 				selector.Project = fromClaude.Project
 			}
+		}
+		if command == "statusline" && selector.Provider == core.Agy {
+			snapshot, parseErr := statusline.ParseAgy(os.Stdin)
+			if parseErr != nil {
+				return parseErr
+			}
+			if _, fingerprintErr := s.EnsurePricingFingerprint(prices.Fingerprint()); fingerprintErr != nil {
+				return fingerprintErr
+			}
+			for i := range snapshot.Usage {
+				snapshot.Usage[i] = prices.Price(core.Agy, snapshot.UpdatedAt, snapshot.Usage[i])
+			}
+			source := ""
+			if filepath.Base(snapshot.ID) == snapshot.ID {
+				source = filepath.Join(cfg.AgyDir, "conversations", snapshot.ID+".db")
+			}
+			if stat, statErr := os.Stat(source); statErr == nil && !stat.IsDir() {
+				snapshot.SourcePath = source
+				parsed := core.Parsed{
+					Session:    snapshot,
+					Provider:   core.Agy,
+					SourcePath: source,
+					Offset:     stat.Size(),
+					Replace:    true,
+				}
+				if applyErr := s.Apply(ctx, parsed, stat); applyErr != nil {
+					return applyErr
+				}
+			}
+			line, renderErr := statusline.Render(snapshot, effectiveStatusFormat(*format))
+			if renderErr != nil {
+				return renderErr
+			}
+			fmt.Println(line)
+			return nil
 		}
 		var scanErr error
 		if !*noScan {
@@ -359,5 +396,5 @@ func effectiveStatusFormat(format string) string {
 }
 
 func supportedProvider(provider core.Provider) bool {
-	return provider == core.Claude || provider == core.Codex || provider == core.Gemini || provider == core.Pi || provider == core.OpenCode
+	return provider == core.Claude || provider == core.Codex || provider == core.Gemini || provider == core.Agy || provider == core.Pi || provider == core.OpenCode
 }

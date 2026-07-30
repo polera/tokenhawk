@@ -1,6 +1,6 @@
 # Tokenhawk
 
-Tokenhawk is a local, live token-usage monitor for Claude Code, Codex, Gemini CLI, Pi, and OpenCode. It indexes session metadata from the tools' normal home-directory stores and presents active sessions, history, per-model usage, spend since a chosen date, and cost estimates in a Bubble Tea terminal UI.
+Tokenhawk is a local, live token-usage monitor for Claude Code, Codex, Gemini CLI, Antigravity CLI (`agy`), Pi, and OpenCode. It indexes session metadata from the tools' normal home-directory stores and presents active sessions, history, per-model usage, spend since a chosen date, and cost estimates in a Bubble Tea terminal UI.
 
 Tokenhawk never stores or exports prompts, responses, tool arguments, credentials, or transcript content.
 
@@ -30,9 +30,9 @@ _Screenshots use synthetic demo data._
 
 ## Features
 
-- Live, local monitoring of Claude Code, Codex, Gemini CLI, Pi, and OpenCode sessions
+- Live, local monitoring of Claude Code, Codex, Gemini CLI, Antigravity CLI (`agy`), Pi, and OpenCode sessions
 - Compact per-session status output for shell, JSON, ANSI, and tmux integrations
-- Native Claude Code status-line integration and tmux-backed wrappers for every supported client
+- Native Claude Code and Antigravity status-line integrations and tmux-backed wrappers for every supported client
 - Separate Active, Inactive Sessions, All Sessions, and Spend views
 - Spend totals and input-to-output ratios since any relative or absolute date, broken out by provider, model, and day
 - Per-session and per-model input, cached, output, reasoning, tool, and total tokens
@@ -95,6 +95,7 @@ Run it in a dedicated terminal tab or window. By default Tokenhawk reads:
 - Claude: `~/.claude/projects/**/*.jsonl`
 - Codex: `$CODEX_HOME/sessions/**/*.jsonl` and `archived_sessions`, or `~/.codex`
 - Gemini: `~/.gemini/tmp/*/chats/session-*.json`
+- Antigravity (`agy`): `~/.gemini/antigravity-cli/conversations/*.db`
 - Pi: `${PI_CODING_AGENT_SESSION_DIR:-~/.pi/agent/sessions}/**/*.jsonl`
 - OpenCode: `${XDG_DATA_HOME:-~/.local/share}/opencode/opencode.db`
 
@@ -155,6 +156,40 @@ tokenhawk wrap codex resume SESSION_ID
 tokenhawk wrap gemini
 tokenhawk wrap gemini --model gemini-2.5-pro
 tokenhawk wrap gemini --resume SESSION_ID
+```
+
+### Antigravity CLI (`agy`): native status line
+
+[AGY's custom status line](https://antigravity.google/docs/cli/statusline) supplies
+the exact conversation ID, workspace, active model, and cumulative input/output
+totals. Add this block to `~/.gemini/antigravity-cli/settings.json`, merging it
+with the settings already there:
+
+```json
+{
+  "statusLine": {
+    "type": "command",
+    "command": "tokenhawk statusline agy",
+    "enabled": true,
+    "stack_with_default": true
+  }
+}
+```
+
+AGY invokes Tokenhawk whenever its agent state changes. Tokenhawk ignores account
+and quota fields in the payload, stores the live usage snapshot under the
+conversation UUID, and renders the compact line inside AGY. AGY exposes
+cumulative input and output but only the current cache counters, so cached input
+is recorded as the best lower bound available.
+
+Conversation files that predate this configuration are still discovered, but
+their token totals remain empty until the conversation is resumed and AGY emits
+a status payload. The universal tmux wrapper is also available:
+
+```sh
+tokenhawk wrap agy
+tokenhawk wrap agy --model "Gemini 3.5 Flash (High)"
+tokenhawk wrap agy --conversation SESSION_ID
 ```
 
 ### Pi: live tmux status bar
@@ -255,6 +290,7 @@ Tokenhawk loads `tokenhawk/config.toml` below the OS user-config directory. All 
 claude_dir = "~/.claude/projects"
 codex_dir = "~/.codex"
 gemini_dir = "~/.gemini/tmp"
+agy_dir = "~/.gemini/antigravity-cli"
 pi_dir = "~/.pi/agent/sessions"
 opencode_db = "~/.local/share/opencode/opencode.db"
 active_window = "5m"
@@ -268,7 +304,7 @@ Equivalent CLI flags override the loaded values. Use `--rebuild` after changing 
 
 ## Pricing
 
-Claude, Codex, and Gemini costs are explicitly estimates of public API list-price equivalents, not subscription charges, invoices, free-tier consumption, discounts, or taxes. The bundled, effective-dated catalog only prices exact known model IDs. Unknown identifiers remain marked `unpriced` rather than inheriting a guessed family rate. Pi and OpenCode already record calculated costs; Tokenhawk labels those values `reported` and preserves them instead of applying a second price calculation.
+Claude, Codex, Gemini, and recognized models used through AGY are explicitly estimates of public API list-price equivalents, not subscription charges, invoices, free-tier consumption, discounts, credits, or taxes. AGY model labels are normalized before exact lookup and use the underlying Gemini or Claude catalog rate. Unknown identifiers remain marked `unpriced` rather than inheriting a guessed family rate. Pi and OpenCode already record calculated costs; Tokenhawk labels those values `reported` and preserves them instead of applying a second price calculation.
 
 Session detail includes a copy-ready resume command. Tokenhawk changes to the recorded project directory first because resume behavior can be project-sensitive.
 

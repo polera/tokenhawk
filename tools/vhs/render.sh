@@ -25,7 +25,7 @@ cd "$ROOT"
 unset NO_COLOR
 exec ./tokenhawk --config "$DEMO/empty.toml" \\
   --claude-dir "$DEMO/fixtures/claude" --codex-dir "$DEMO/fixtures/codex" \\
-  --gemini-dir "$DEMO/fixtures/gemini" --pi-dir "$DEMO/fixtures/pi" \\
+  --gemini-dir "$DEMO/fixtures/gemini" --agy-dir "$DEMO/fixtures/agy" --pi-dir "$DEMO/fixtures/pi" \\
   --opencode-db "$DEMO/none.db" --db "$DEMO/index.db" --active-window 5m
 EOF
 chmod +x "$DEMO/run.sh"

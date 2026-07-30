@@ -14,6 +14,7 @@ type Config struct {
 	ClaudeDir     string
 	CodexDir      string
 	GeminiDir     string
+	AgyDir        string
 	PiDir         string
 	OpenCodeDB    string
 	DBPath        string
@@ -52,6 +53,7 @@ func Defaults() (Config, error) {
 		ClaudeDir:    filepath.Join(home, ".claude", "projects"),
 		CodexDir:     codex,
 		GeminiDir:    filepath.Join(home, ".gemini", "tmp"),
+		AgyDir:       filepath.Join(home, ".gemini", "antigravity-cli"),
 		PiDir:        piDir,
 		OpenCodeDB:   filepath.Join(dataHome, "opencode", "opencode.db"),
 		DBPath:       filepath.Join(cache, "tokenhawk", "index.db"),
@@ -97,6 +99,8 @@ func Load(path string, c *Config) error {
 			c.CodexDir = expandHome(val)
 		case "gemini_dir":
 			c.GeminiDir = expandHome(val)
+		case "agy_dir":
+			c.AgyDir = expandHome(val)
 		case "pi_dir":
 			c.PiDir = expandHome(val)
 		case "opencode_db":

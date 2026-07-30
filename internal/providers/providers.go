@@ -18,17 +18,29 @@ import (
 	_ "modernc.org/sqlite"
 )
 
-func Discover(claudeDir, codexDir, geminiDir, piDir, openCodeDB string) ([]string, error) {
+func Discover(claudeDir, codexDir, geminiDir, agyDir, piDir, openCodeDB string) ([]string, error) {
 	var paths []string
+	codexSessions, codexArchived := "", ""
+	if codexDir != "" {
+		codexSessions = filepath.Join(codexDir, "sessions")
+		codexArchived = filepath.Join(codexDir, "archived_sessions")
+	}
+	agyConversations := ""
+	if agyDir != "" {
+		agyConversations = filepath.Join(agyDir, "conversations")
+	}
 	roots := []struct {
 		root  string
 		match func(string) bool
 	}{
 		{claudeDir, func(p string) bool { return strings.HasSuffix(p, ".jsonl") }},
-		{filepath.Join(codexDir, "sessions"), func(p string) bool { return strings.HasSuffix(p, ".jsonl") }},
-		{filepath.Join(codexDir, "archived_sessions"), func(p string) bool { return strings.HasSuffix(p, ".jsonl") }},
+		{codexSessions, func(p string) bool { return strings.HasSuffix(p, ".jsonl") }},
+		{codexArchived, func(p string) bool { return strings.HasSuffix(p, ".jsonl") }},
 		{geminiDir, func(p string) bool {
 			return strings.HasSuffix(p, ".json") && strings.HasPrefix(filepath.Base(p), "session-") && filepath.Base(filepath.Dir(p)) == "chats"
+		}},
+		{agyConversations, func(p string) bool {
+			return strings.HasSuffix(p, ".db")
 		}},
 		{piDir, func(p string) bool { return strings.HasSuffix(p, ".jsonl") }},
 	}
@@ -63,21 +75,24 @@ func Discover(claudeDir, codexDir, geminiDir, piDir, openCodeDB string) ([]strin
 	return paths, nil
 }
 
-func ProviderFor(path, claudeDir, codexDir, geminiDir, piDir, openCodeDB string) core.Provider {
+func ProviderFor(path, claudeDir, codexDir, geminiDir, agyDir, piDir, openCodeDB string) core.Provider {
 	clean := filepath.Clean(path)
-	if strings.HasPrefix(clean, filepath.Clean(openCodeDB)+"#") || clean == filepath.Clean(openCodeDB) {
+	if openCodeDB != "" && (strings.HasPrefix(clean, filepath.Clean(openCodeDB)+"#") || clean == filepath.Clean(openCodeDB)) {
 		return core.OpenCode
 	}
-	if within(clean, filepath.Clean(claudeDir)) {
+	if claudeDir != "" && within(clean, filepath.Clean(claudeDir)) {
 		return core.Claude
 	}
-	if within(clean, filepath.Clean(codexDir)) {
+	if codexDir != "" && within(clean, filepath.Clean(codexDir)) {
 		return core.Codex
 	}
-	if within(clean, filepath.Clean(geminiDir)) {
+	if agyDir != "" && within(clean, filepath.Join(filepath.Clean(agyDir), "conversations")) {
+		return core.Agy
+	}
+	if geminiDir != "" && within(clean, filepath.Clean(geminiDir)) {
 		return core.Gemini
 	}
-	if within(clean, filepath.Clean(piDir)) {
+	if piDir != "" && within(clean, filepath.Clean(piDir)) {
 		return core.Pi
 	}
 	return ""
@@ -96,11 +111,41 @@ func Parse(path string, provider core.Provider, previous core.SourceState) (core
 		return parseCodex(path, previous)
 	case core.Gemini:
 		return parseGemini(path)
+	case core.Agy:
+		return parseAgy(path)
 	case core.Pi:
 		return parsePi(path, previous)
 	default:
 		return core.Parsed{}, fmt.Errorf("unknown provider for %s", path)
 	}
+}
+
+// parseAgy discovers Antigravity CLI conversations from their SQLite files.
+// Token accounting is deliberately not decoded from AGY's private protobuf
+// blobs; the documented status-line payload supplies those totals and replaces
+// the usage snapshot while this record keeps the conversation discoverable.
+func parseAgy(path string) (core.Parsed, error) {
+	stat, err := os.Stat(path)
+	if err != nil {
+		return core.Parsed{}, err
+	}
+	id := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+	session := core.Session{
+		Provider:     core.Agy,
+		ID:           id,
+		StartedAt:    stat.ModTime(),
+		UpdatedAt:    stat.ModTime(),
+		SourcePath:   path,
+		SourceHealth: "ok",
+	}
+	return core.Parsed{
+		Session:    session,
+		Provider:   core.Agy,
+		SourcePath: path,
+		Offset:     stat.Size(),
+		// Preserve a status-line usage snapshot when the conversation DB changes.
+		Replace: false,
+	}, nil
 }
 
 type piRecord struct {
