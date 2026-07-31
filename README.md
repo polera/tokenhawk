@@ -297,6 +297,7 @@ active_window = "5m"
 refresh = "2s"
 db_path = "~/.cache/tokenhawk/index.db"
 pricing_file = "~/.config/tokenhawk/pricing.json"
+anthropic_cost_lookback_days = 31
 include_source = false
 ```
 
@@ -305,6 +306,41 @@ Equivalent CLI flags override the loaded values. Use `--rebuild` after changing 
 ## Pricing
 
 Claude, Codex, Gemini, and recognized models used through AGY are explicitly estimates of public API list-price equivalents, not subscription charges, invoices, free-tier consumption, discounts, credits, or taxes. AGY model labels are normalized before exact lookup and use the underlying Gemini or Claude catalog rate. Unknown identifiers remain marked `unpriced` rather than inheriting a guessed family rate. Pi and OpenCode already record calculated costs; Tokenhawk labels those values `reported` and preserves them instead of applying a second price calculation.
+
+### Anthropic-reported spend
+
+Organization administrators can give Tokenhawk read access to Anthropic's
+[Usage and Cost Admin API](https://platform.claude.com/docs/en/manage-claude/usage-cost-api)
+through an Admin API key:
+
+```sh
+export ANTHROPIC_ADMIN_KEY='sk-ant-admin...'
+tokenhawk
+```
+
+Tokenhawk calls `GET /v1/organizations/cost_report` grouped by description,
+preserves the response's fractional-cent USD amounts, and stores a daily ledger
+of organization-wide costs by exact model identifier. The first interactive run
+imports 31 UTC days by default; `anthropic_cost_lookback_days` or
+`--anthropic-cost-lookback-days` can widen that bootstrap. While Tokenhawk
+remains open it refreshes the current and previous UTC day every five minutes.
+The key is read only from the environment and is never written to Tokenhawk's
+configuration or index.
+
+The Spend view uses these rows as reported cost for covered UTC days and removes
+the overlapping Claude list-price estimate, while keeping local session tokens
+and estimates for other providers. It displays reported and estimated dollars
+separately when both occur in a window. Anthropic's report has no local session
+or project ID, so reported costs are not assigned to individual sessions and
+are excluded while a Spend search is active. Daily cost buckets are UTC even
+though local session totals remain attributed to the day of their last update.
+
+The Admin API is unavailable to individual accounts. For Pro and Max
+subscriptions, model use is included in the subscription and there is no
+authoritative per-model billed spend to import. Priority Tier charges and usage
+routed through Bedrock, Vertex, Foundry, or Claude Platform on AWS are also not
+reported by this endpoint; those remain estimates unless their billing provider
+is integrated separately.
 
 Session detail includes a copy-ready resume command. Tokenhawk changes to the recorded project directory first because resume behavior can be project-sensitive.
 

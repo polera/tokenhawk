@@ -20,8 +20,10 @@ import (
 
 type RefreshMsg struct{}
 type sessionsMsg struct {
-	sessions []core.Session
-	err      error
+	sessions     []core.Session
+	reported     []core.ReportedCost
+	reportedDays []time.Time
+	err          error
 }
 type exportMsg struct {
 	path string
@@ -33,6 +35,8 @@ type Model struct {
 	prices                       *pricing.Catalog
 	table                        table.Model
 	sessions, shown              []core.Session
+	reportedCosts                []core.ReportedCost
+	reportedCostDays             []time.Time
 	width, height, tab, sortMode int
 	provider                     core.Provider
 	search                       string
@@ -97,7 +101,11 @@ func (m Model) Init() tea.Cmd { return tea.Batch(m.load(), tea.RequestBackground
 func (m Model) load() tea.Cmd {
 	return func() tea.Msg {
 		s, e := m.monitor.Sessions(context.Background(), core.Filter{})
-		return sessionsMsg{s, e}
+		if e != nil {
+			return sessionsMsg{err: e}
+		}
+		reported, days, e := m.monitor.ReportedCosts(context.Background())
+		return sessionsMsg{sessions: s, reported: reported, reportedDays: days, err: e}
 	}
 }
 
@@ -124,6 +132,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.notice = x.err.Error()
 		} else {
 			m.sessions = x.sessions
+			m.reportedCosts = x.reported
+			m.reportedCostDays = x.reportedDays
 			m.rebuild()
 		}
 		return m, nil
@@ -141,7 +151,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.searching {
 			return m.updateSearch(x)
 		}
-		if m.tab == spendTab && !m.detail {
+		if m.textTab() && !m.detail {
 			return m.updateSpend(x)
 		}
 		if m.detail {
@@ -191,6 +201,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.tab = spendTab
 			m.spendOffset = 0
 			m.rebuild()
+		case "5":
+			m.tab = reconcileTab
+			m.spendOffset = 0
+			m.rebuild()
 		case "i":
 			m.toggleActiveInactive()
 		case "p":
@@ -226,6 +240,14 @@ func (m Model) updateSpend(k tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	case "1", "2", "3":
 		m.tab = int(k.String()[0] - '1')
+		m.spendOffset = 0
+		m.rebuild()
+	case "4":
+		m.tab = spendTab
+		m.spendOffset = 0
+		m.rebuild()
+	case "5":
+		m.tab = reconcileTab
 		m.spendOffset = 0
 		m.rebuild()
 	case "i":
@@ -399,7 +421,7 @@ func (m *Model) rebuild() {
 		if m.provider != "" && s.Provider != m.provider {
 			continue
 		}
-		if m.tab == spendTab {
+		if m.textTab() {
 			if !m.spendSince.IsZero() && s.UpdatedAt.Before(m.spendSince) {
 				continue
 			}
@@ -504,7 +526,7 @@ func (m Model) View() tea.View {
 func (m Model) dashboard() string {
 	header, footer := m.chrome()
 	body := m.table.View()
-	if m.tab == spendTab {
+	if m.textTab() {
 		body = m.spendBody()
 	}
 	return header + "\n\n" + body + "\n" + footer
@@ -522,7 +544,7 @@ func (m Model) chrome() (string, string) {
 		runningAgents += s.RunningSubagents()
 	}
 	cacheAlarms := activeCacheAlarms(m.sessions)
-	tabs := []string{"1 Active", "2 Inactive Sessions", "3 All Sessions", "4 Spend"}
+	tabs := []string{"1 Active", "2 Inactive Sessions", "3 All Sessions", "4 Spend", "5 Reconcile"}
 	tabs[m.tab] = titleStyle.Render(tabs[m.tab])
 	provider := "all"
 	if m.provider != "" {
@@ -543,8 +565,8 @@ func (m Model) chrome() (string, string) {
 		status = m.monitor.Status()
 	}
 	keys := "i active/inactive  p provider  s sort  / filter  enter details  e JSON  x CSV  q quit"
-	if m.tab == spendTab {
-		keys = "t range  d since  1-3 sessions  p provider  / filter  ↑/↓ scroll  e JSON  x CSV  q quit"
+	if m.textTab() {
+		keys = "t range  d since  1-3 sessions  4 spend  5 reconcile  p provider  ↑/↓ scroll  e JSON  x CSV  q quit"
 	}
 	footer := fmt.Sprintf("%s  •  indexed %d files", keys, status.Files)
 	if status.Scanning {
@@ -552,6 +574,9 @@ func (m Model) chrome() (string, string) {
 	}
 	if status.Warning != "" {
 		footer += " • warning: " + status.Warning
+	}
+	if status.CostWarning != "" {
+		footer += " • warning: " + status.CostWarning
 	}
 	if m.notice != "" {
 		footer += "\n" + m.notice
@@ -564,10 +589,18 @@ func (m Model) chromeHeight() int {
 	return lipgloss.Height(header) + lipgloss.Height(footer) + 1
 }
 
-// spendBody renders the spend report clipped to the available rows, with the
-// same scroll affordance the session detail uses.
+// textTab reports whether the active tab renders a scrolling text report
+// rather than the session table. Those tabs share the spend window, the scroll
+// offset, and updateSpend's key handling.
+func (m Model) textTab() bool { return m.tab == spendTab || m.tab == reconcileTab }
+
+// spendBody renders the active text report clipped to the available rows, with
+// the same scroll affordance the session detail uses.
 func (m Model) spendBody() string {
 	content := m.spendContent()
+	if m.tab == reconcileTab {
+		content = m.reconcileContent()
+	}
 	lines := strings.Split(content, "\n")
 	visible := m.spendViewport()
 	if m.height <= 0 || len(lines) <= visible {

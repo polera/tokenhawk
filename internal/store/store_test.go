@@ -1,9 +1,14 @@
 package store
 
 import (
+	"context"
 	"database/sql"
 	"path/filepath"
 	"testing"
+	"time"
+
+	"github.com/polera/tokenhawk/internal/anthropiccost"
+	"github.com/polera/tokenhawk/internal/core"
 )
 
 func TestOpeningLegacyIndexRebuildsMergedUsage(t *testing.T) {
@@ -44,6 +49,34 @@ INSERT INTO usage VALUES('claude','parent','model',100,0,0,10,0,0,110,1.0,'price
 	}
 	if count != 4 {
 		t.Fatalf("subagent source migration incomplete: %d columns", count)
+	}
+}
+
+func TestReportedCostsReplaceCoveredDaysAndPreserveZeroSpendCoverage(t *testing.T) {
+	s, err := Open(filepath.Join(t.TempDir(), "index.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	ctx := context.Background()
+	day := time.Date(2026, 7, 29, 0, 0, 0, 0, time.UTC)
+	cost := core.ReportedCost{
+		Provider: core.Claude, Day: day, Model: "claude-opus-5",
+		AmountNanoUSD: 1_250_000_000, Source: anthropiccost.Source,
+	}
+	if err = s.ReplaceReportedCosts(ctx, core.Claude, anthropiccost.Source, []core.ReportedCost{cost}, []time.Time{day}); err != nil {
+		t.Fatal(err)
+	}
+	costs, days, err := s.ReportedCosts(ctx)
+	if err != nil || len(costs) != 1 || costs[0].AmountNanoUSD != cost.AmountNanoUSD || len(days) != 1 {
+		t.Fatalf("stored ledger = costs %#v days %#v err %v", costs, days, err)
+	}
+	if err = s.ReplaceReportedCosts(ctx, core.Claude, anthropiccost.Source, nil, []time.Time{day}); err != nil {
+		t.Fatal(err)
+	}
+	costs, days, err = s.ReportedCosts(ctx)
+	if err != nil || len(costs) != 0 || len(days) != 1 || !days[0].Equal(day) {
+		t.Fatalf("zero-cost replacement lost coverage: costs %#v days %#v err %v", costs, days, err)
 	}
 }
 

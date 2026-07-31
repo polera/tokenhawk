@@ -11,17 +11,19 @@ import (
 )
 
 type Config struct {
-	ClaudeDir     string
-	CodexDir      string
-	GeminiDir     string
-	AgyDir        string
-	PiDir         string
-	OpenCodeDB    string
-	DBPath        string
-	PricingFile   string
-	ActiveWindow  time.Duration
-	Refresh       time.Duration
-	IncludeSource bool
+	ClaudeDir                 string
+	CodexDir                  string
+	GeminiDir                 string
+	AgyDir                    string
+	PiDir                     string
+	OpenCodeDB                string
+	DBPath                    string
+	PricingFile               string
+	AnthropicAdminKey         string
+	AnthropicCostLookbackDays int
+	ActiveWindow              time.Duration
+	Refresh                   time.Duration
+	IncludeSource             bool
 }
 
 func Defaults() (Config, error) {
@@ -50,15 +52,19 @@ func Defaults() (Config, error) {
 		dataHome = filepath.Join(home, ".local", "share")
 	}
 	return Config{
-		ClaudeDir:    filepath.Join(home, ".claude", "projects"),
-		CodexDir:     codex,
-		GeminiDir:    filepath.Join(home, ".gemini", "tmp"),
-		AgyDir:       filepath.Join(home, ".gemini", "antigravity-cli"),
-		PiDir:        piDir,
-		OpenCodeDB:   filepath.Join(dataHome, "opencode", "opencode.db"),
-		DBPath:       filepath.Join(cache, "tokenhawk", "index.db"),
-		ActiveWindow: 5 * time.Minute,
-		Refresh:      2 * time.Second,
+		ClaudeDir:  filepath.Join(home, ".claude", "projects"),
+		CodexDir:   codex,
+		GeminiDir:  filepath.Join(home, ".gemini", "tmp"),
+		AgyDir:     filepath.Join(home, ".gemini", "antigravity-cli"),
+		PiDir:      piDir,
+		OpenCodeDB: filepath.Join(dataHome, "opencode", "opencode.db"),
+		DBPath:     filepath.Join(cache, "tokenhawk", "index.db"),
+		// Admin keys are intentionally read only from the environment so they
+		// are not encouraged into a plaintext Tokenhawk config file.
+		AnthropicAdminKey:         os.Getenv("ANTHROPIC_ADMIN_KEY"),
+		AnthropicCostLookbackDays: 31,
+		ActiveWindow:              5 * time.Minute,
+		Refresh:                   2 * time.Second,
 	}, nil
 }
 
@@ -109,6 +115,12 @@ func Load(path string, c *Config) error {
 			c.DBPath = expandHome(val)
 		case "pricing_file":
 			c.PricingFile = expandHome(val)
+		case "anthropic_cost_lookback_days":
+			n, e := strconv.Atoi(val)
+			if e != nil || n < 1 {
+				return fmt.Errorf("anthropic_cost_lookback_days must be a positive integer")
+			}
+			c.AnthropicCostLookbackDays = n
 		case "active_window":
 			d, e := time.ParseDuration(val)
 			if e != nil {

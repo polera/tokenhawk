@@ -114,6 +114,7 @@ func Run(args []string, version string) error {
 	fs.StringVar(&cfg.OpenCodeDB, "opencode-db", cfg.OpenCodeDB, "OpenCode SQLite database")
 	fs.StringVar(&cfg.DBPath, "db", cfg.DBPath, "index database")
 	fs.StringVar(&cfg.PricingFile, "pricing-file", cfg.PricingFile, "pricing override JSON")
+	fs.IntVar(&cfg.AnthropicCostLookbackDays, "anthropic-cost-lookback-days", cfg.AnthropicCostLookbackDays, "UTC days to import from Anthropic on first sync")
 	fs.DurationVar(&cfg.ActiveWindow, "active-window", cfg.ActiveWindow, "active session threshold")
 	fs.DurationVar(&cfg.Refresh, "refresh", cfg.Refresh, "reconciliation interval")
 	rebuild := fs.Bool("rebuild", false, "rebuild the index")
@@ -139,6 +140,9 @@ func Run(args []string, version string) error {
 	}
 	if err = fs.Parse(args); err != nil {
 		return err
+	}
+	if cfg.AnthropicCostLookbackDays < 1 {
+		return fmt.Errorf("--anthropic-cost-lookback-days must be positive")
 	}
 	if command == "tui" && interactiveTerminal() {
 		if upgraded := offerUpgrade(version); upgraded {

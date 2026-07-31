@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+	"github.com/polera/tokenhawk/internal/anthropiccost"
 	"github.com/polera/tokenhawk/internal/config"
 	"github.com/polera/tokenhawk/internal/core"
 	"github.com/polera/tokenhawk/internal/pricing"
@@ -20,18 +21,31 @@ type Status struct {
 	Scanning       bool
 	Files, Updated int
 	LastScan       time.Time
+	LastCostSync   time.Time
 	Warning        string
+	CostWarning    string
 }
+
+type costFetcher interface {
+	Fetch(context.Context, time.Time, time.Time) (anthropiccost.Ledger, error)
+}
+
 type Monitor struct {
-	cfg    config.Config
-	store  *store.Store
-	prices *pricing.Catalog
-	mu     sync.RWMutex
-	status Status
+	cfg         config.Config
+	store       *store.Store
+	prices      *pricing.Catalog
+	costs       costFetcher
+	mu          sync.RWMutex
+	status      Status
+	lastCostRun time.Time
 }
 
 func New(cfg config.Config, s *store.Store, p *pricing.Catalog) *Monitor {
-	return &Monitor{cfg: cfg, store: s, prices: p}
+	m := &Monitor{cfg: cfg, store: s, prices: p}
+	if cfg.AnthropicAdminKey != "" {
+		m.costs = anthropiccost.New(cfg.AnthropicAdminKey)
+	}
+	return m
 }
 func (m *Monitor) Status() Status { m.mu.RLock(); defer m.mu.RUnlock(); return m.status }
 
@@ -158,6 +172,9 @@ func (m *Monitor) Run(ctx context.Context, onUpdate func()) error {
 	if err := m.Scan(ctx); err != nil {
 		return err
 	}
+	if err := m.syncReportedCosts(ctx); err != nil {
+		m.warnCost(err)
+	}
 	if onUpdate != nil {
 		onUpdate()
 	}
@@ -196,6 +213,11 @@ func (m *Monitor) Run(ctx context.Context, onUpdate func()) error {
 				if err = m.Scan(ctx); err != nil {
 					m.warn(err.Error())
 				}
+				if time.Since(m.lastCostRun) >= 5*time.Minute {
+					if syncErr := m.syncReportedCosts(ctx); syncErr != nil {
+						m.warnCost(syncErr)
+					}
+				}
 				dirty = false
 				if onUpdate != nil {
 					onUpdate()
@@ -231,6 +253,64 @@ func (m *Monitor) warn(v string) { m.mu.Lock(); m.status.Warning = v; m.mu.Unloc
 
 func (m *Monitor) Sessions(ctx context.Context, f core.Filter) ([]core.Session, error) {
 	return m.store.List(ctx, f, m.cfg.ActiveWindow, m.cfg.IncludeSource)
+}
+
+func (m *Monitor) ReportedCosts(ctx context.Context) ([]core.ReportedCost, []time.Time, error) {
+	return m.store.ReportedCosts(ctx)
+}
+
+func (m *Monitor) syncReportedCosts(ctx context.Context) error {
+	if m.costs == nil {
+		return nil
+	}
+	now := time.Now()
+	m.lastCostRun = now
+	days := m.cfg.AnthropicCostLookbackDays
+	if days < 1 {
+		days = 31
+	}
+	end := utcDay(now).AddDate(0, 0, 1)
+	start := end.AddDate(0, 0, -days)
+	_, existingDays, err := m.store.ReportedCosts(ctx)
+	if err != nil {
+		return err
+	}
+	existing := map[int64]bool{}
+	for _, day := range existingDays {
+		existing[utcDay(day).Unix()] = true
+	}
+	complete := true
+	for day := start; day.Before(end); day = day.AddDate(0, 0, 1) {
+		complete = complete && existing[day.Unix()]
+	}
+	if complete {
+		// Refresh yesterday and the still-open current UTC bucket. Older rows
+		// are immutable enough for interactive monitoring and remain cached.
+		start = end.AddDate(0, 0, -2)
+	}
+	ledger, err := m.costs.Fetch(ctx, start, end)
+	if err != nil {
+		return err
+	}
+	if err = m.store.ReplaceReportedCosts(ctx, core.Claude, anthropiccost.Source, ledger.Costs, ledger.CoveredDays); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	m.status.LastCostSync = time.Now()
+	m.status.CostWarning = ""
+	m.mu.Unlock()
+	return nil
+}
+
+func (m *Monitor) warnCost(err error) {
+	m.mu.Lock()
+	m.status.CostWarning = "Anthropic cost sync: " + err.Error()
+	m.mu.Unlock()
+}
+
+func utcDay(t time.Time) time.Time {
+	y, month, day := t.UTC().Date()
+	return time.Date(y, month, day, 0, 0, 0, 0, time.UTC)
 }
 
 func priceParsed(catalog *pricing.Catalog, provider core.Provider, parsed *core.Parsed) {

@@ -31,6 +31,21 @@ type Usage struct {
 	PricingStatus   string  `json:"pricing_status"`
 }
 
+// ReportedCost is a provider billing amount for one UTC day. AmountNanoUSD
+// keeps Anthropic's fractional-cent values exact through persistence and only
+// converts to floating point at the presentation boundary.
+type ReportedCost struct {
+	Provider      Provider  `json:"provider"`
+	Day           time.Time `json:"day"`
+	Model         string    `json:"model,omitempty"`
+	AmountNanoUSD int64     `json:"amount_nano_usd"`
+	Source        string    `json:"source"`
+}
+
+func (c ReportedCost) USD() float64 {
+	return float64(c.AmountNanoUSD) / 1_000_000_000
+}
+
 type Session struct {
 	Provider     Provider   `json:"provider"`
 	ID           string     `json:"session_id"`

@@ -42,8 +42,11 @@ CREATE TABLE IF NOT EXISTS sessions(provider TEXT NOT NULL,id TEXT NOT NULL,proj
 CREATE TABLE IF NOT EXISTS usage(provider TEXT NOT NULL,session_id TEXT NOT NULL,model TEXT NOT NULL,input INTEGER NOT NULL,cached_input INTEGER NOT NULL,cache_creation INTEGER NOT NULL,cache_creation_1h INTEGER NOT NULL DEFAULT 0,output INTEGER NOT NULL,reasoning INTEGER NOT NULL,tool INTEGER NOT NULL,total INTEGER NOT NULL,cost_usd REAL NOT NULL,pricing_status TEXT NOT NULL,PRIMARY KEY(provider,session_id,model));
 CREATE TABLE IF NOT EXISTS subagents(provider TEXT NOT NULL,parent_session_id TEXT NOT NULL,id TEXT NOT NULL,name TEXT NOT NULL DEFAULT '',agent_path TEXT NOT NULL DEFAULT '',started_at INTEGER NOT NULL,updated_at INTEGER NOT NULL,status TEXT NOT NULL DEFAULT 'unknown',source_health TEXT NOT NULL DEFAULT 'ok',PRIMARY KEY(provider,parent_session_id,id));
 CREATE TABLE IF NOT EXISTS subagent_usage(provider TEXT NOT NULL,parent_session_id TEXT NOT NULL,subagent_id TEXT NOT NULL,model TEXT NOT NULL,input INTEGER NOT NULL,cached_input INTEGER NOT NULL,cache_creation INTEGER NOT NULL,cache_creation_1h INTEGER NOT NULL DEFAULT 0,output INTEGER NOT NULL,reasoning INTEGER NOT NULL,tool INTEGER NOT NULL,total INTEGER NOT NULL,cost_usd REAL NOT NULL,pricing_status TEXT NOT NULL,PRIMARY KEY(provider,parent_session_id,subagent_id,model));
+CREATE TABLE IF NOT EXISTS reported_cost_days(provider TEXT NOT NULL,day INTEGER NOT NULL,source TEXT NOT NULL,fetched_at INTEGER NOT NULL,PRIMARY KEY(provider,day,source));
+CREATE TABLE IF NOT EXISTS reported_costs(provider TEXT NOT NULL,day INTEGER NOT NULL,model TEXT NOT NULL DEFAULT '',amount_nano_usd INTEGER NOT NULL,source TEXT NOT NULL,PRIMARY KEY(provider,day,model,source));
 CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL);
-CREATE INDEX IF NOT EXISTS sessions_updated ON sessions(updated_at DESC);`)
+CREATE INDEX IF NOT EXISTS sessions_updated ON sessions(updated_at DESC);
+CREATE INDEX IF NOT EXISTS reported_costs_day ON reported_costs(day);`)
 	if err != nil {
 		return err
 	}
@@ -357,6 +360,78 @@ func (s *Store) usage(ctx context.Context, p core.Provider, id string) ([]core.U
 	return out, rows.Err()
 }
 
+// ReplaceReportedCosts atomically replaces provider-reported rows for every
+// explicitly covered UTC day. A successful zero-cost day is retained in the
+// coverage table so callers can distinguish zero spend from unsynced data.
+func (s *Store) ReplaceReportedCosts(ctx context.Context, provider core.Provider, source string, costs []core.ReportedCost, coveredDays []time.Time) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	fetchedAt := time.Now().UnixNano()
+	covered := map[int64]bool{}
+	for _, day := range coveredDays {
+		value := utcDay(day).Unix()
+		covered[value] = true
+		if _, err = tx.ExecContext(ctx, `DELETE FROM reported_costs WHERE provider=? AND day=? AND source=?`, string(provider), value, source); err != nil {
+			return err
+		}
+		if _, err = tx.ExecContext(ctx, `INSERT INTO reported_cost_days(provider,day,source,fetched_at) VALUES(?,?,?,?) ON CONFLICT(provider,day,source) DO UPDATE SET fetched_at=excluded.fetched_at`, string(provider), value, source, fetchedAt); err != nil {
+			return err
+		}
+	}
+	for _, cost := range costs {
+		day := utcDay(cost.Day).Unix()
+		if cost.Provider != provider || cost.Source != source || !covered[day] {
+			return fmt.Errorf("reported cost row falls outside replacement coverage")
+		}
+		if _, err = tx.ExecContext(ctx, `INSERT INTO reported_costs(provider,day,model,amount_nano_usd,source) VALUES(?,?,?,?,?) ON CONFLICT(provider,day,model,source) DO UPDATE SET amount_nano_usd=excluded.amount_nano_usd`, string(provider), day, cost.Model, cost.AmountNanoUSD, source); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+func (s *Store) ReportedCosts(ctx context.Context) ([]core.ReportedCost, []time.Time, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT provider,day,model,amount_nano_usd,source FROM reported_costs ORDER BY day,provider,model`)
+	if err != nil {
+		return nil, nil, err
+	}
+	var costs []core.ReportedCost
+	for rows.Next() {
+		var cost core.ReportedCost
+		var provider string
+		var day int64
+		if err = rows.Scan(&provider, &day, &cost.Model, &cost.AmountNanoUSD, &cost.Source); err != nil {
+			_ = rows.Close()
+			return nil, nil, err
+		}
+		cost.Provider = core.Provider(provider)
+		cost.Day = time.Unix(day, 0).UTC()
+		costs = append(costs, cost)
+	}
+	if err = rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, nil, err
+	}
+	_ = rows.Close()
+	coverageRows, err := s.db.QueryContext(ctx, `SELECT day FROM reported_cost_days WHERE provider=? ORDER BY day`, string(core.Claude))
+	if err != nil {
+		return nil, nil, err
+	}
+	defer coverageRows.Close()
+	var days []time.Time
+	for coverageRows.Next() {
+		var day int64
+		if err = coverageRows.Scan(&day); err != nil {
+			return nil, nil, err
+		}
+		days = append(days, time.Unix(day, 0).UTC())
+	}
+	return costs, days, coverageRows.Err()
+}
+
 func (s *Store) Reconcile(ctx context.Context, paths []string) error {
 	return s.reconcile(ctx, paths, "")
 }
@@ -415,4 +490,9 @@ func (s *Store) Reset() error {
 }
 func SortByCost(sessions []core.Session) {
 	sort.SliceStable(sessions, func(i, j int) bool { return sessions[i].Totals().CostUSD > sessions[j].Totals().CostUSD })
+}
+
+func utcDay(t time.Time) time.Time {
+	y, m, d := t.UTC().Date()
+	return time.Date(y, m, d, 0, 0, 0, 0, time.UTC)
 }

@@ -8,11 +8,31 @@ import (
 	"testing"
 	"time"
 
+	"github.com/polera/tokenhawk/internal/anthropiccost"
 	"github.com/polera/tokenhawk/internal/config"
 	"github.com/polera/tokenhawk/internal/core"
 	"github.com/polera/tokenhawk/internal/pricing"
 	"github.com/polera/tokenhawk/internal/store"
 )
+
+type recordingCostFetcher struct {
+	ranges [][2]time.Time
+}
+
+func (f *recordingCostFetcher) Fetch(_ context.Context, start, end time.Time) (anthropiccost.Ledger, error) {
+	f.ranges = append(f.ranges, [2]time.Time{start, end})
+	var covered []time.Time
+	for day := start; day.Before(end); day = day.AddDate(0, 0, 1) {
+		covered = append(covered, day)
+	}
+	return anthropiccost.Ledger{
+		CoveredDays: covered,
+		Costs: []core.ReportedCost{{
+			Provider: core.Claude, Day: start, Model: "claude-opus-5",
+			AmountNanoUSD: 1_000_000_000, Source: anthropiccost.Source,
+		}},
+	}, nil
+}
 
 func TestScanIncrementalAndReconcile(t *testing.T) {
 	root := t.TempDir()
@@ -78,6 +98,40 @@ func TestScanIncrementalAndReconcile(t *testing.T) {
 	}
 	if len(sessions) != 0 {
 		t.Fatalf("deleted source retained: %#v", sessions)
+	}
+}
+
+func TestReportedCostSyncBootstrapsLookbackThenRefreshesTwoDays(t *testing.T) {
+	s, err := store.Open(filepath.Join(t.TempDir(), "index.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	prices, err := pricing.Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fetcher := &recordingCostFetcher{}
+	m := New(config.Config{AnthropicCostLookbackDays: 5}, s, prices)
+	m.costs = fetcher
+	if err = m.syncReportedCosts(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err = m.syncReportedCosts(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(fetcher.ranges) != 2 {
+		t.Fatalf("cost fetch calls = %#v", fetcher.ranges)
+	}
+	if got := int(fetcher.ranges[0][1].Sub(fetcher.ranges[0][0]).Hours() / 24); got != 5 {
+		t.Fatalf("bootstrap fetched %d days, want 5", got)
+	}
+	if got := int(fetcher.ranges[1][1].Sub(fetcher.ranges[1][0]).Hours() / 24); got != 2 {
+		t.Fatalf("refresh fetched %d days, want 2", got)
+	}
+	costs, days, err := m.ReportedCosts(context.Background())
+	if err != nil || len(costs) != 2 || len(days) != 5 {
+		t.Fatalf("synced ledger = costs %#v days %d err %v", costs, len(days), err)
 	}
 }
 

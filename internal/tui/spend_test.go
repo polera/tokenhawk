@@ -303,3 +303,38 @@ func TestSpendBreakdownSeparatesCacheWriteTiers(t *testing.T) {
 		}
 	}
 }
+
+func TestSpendUsesAnthropicReportedCostWithoutDoubleCountingClaudeEstimate(t *testing.T) {
+	m := spendModel(t)
+	day := time.Now().UTC()
+	day = time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, time.UTC)
+	m.reportedCostDays = []time.Time{day}
+	m.reportedCosts = []core.ReportedCost{
+		{Provider: core.Claude, Day: day, Model: "claude-opus-4-8", AmountNanoUSD: 1_250_000_000, Source: "anthropic_admin_cost"},
+		{Provider: core.Claude, Day: day, Model: "claude-haiku-4-5", AmountNanoUSD: 250_000_000, Source: "anthropic_admin_cost"},
+	}
+	m.tab = spendTab
+	m.rebuild()
+	view := m.spendContent()
+	for _, want := range []string{
+		"$1.500000 reported + $1.000000 estimated",
+		"Anthropic Admin API organization billing covers 1 UTC day(s)",
+		"reported: $1.250000  ·  Anthropic Admin Cost API",
+		"BY DAY (UTC)",
+	} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("reported spend view missing %q:\n%s", want, view)
+		}
+	}
+	if strings.Contains(view, "50.0k input × $5/M") {
+		t.Fatalf("replaced Claude estimate still displayed its rate calculation:\n%s", view)
+	}
+
+	m.search = "work"
+	m.rebuild()
+	view = m.spendContent()
+	if !strings.Contains(view, "$5.500000 estimated (priced)") ||
+		!strings.Contains(view, "billing is excluded while search is active") {
+		t.Fatalf("search did not fall back to attributable session estimates:\n%s", view)
+	}
+}
