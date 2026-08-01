@@ -116,20 +116,45 @@ func (c *Catalog) Fingerprint() string { return c.fingerprint }
 // Keeping this selection in one place lets reports explain an estimate without
 // duplicating (and potentially drifting from) the pricing rules.
 func (c *Catalog) Lookup(provider core.Provider, at time.Time, model string) (Rate, bool) {
-	lookupProviders := []core.Provider{provider}
+	type candidate struct {
+		provider core.Provider
+		model    string
+	}
+	lookup := []candidate{{provider: provider, model: model}}
 	if provider == core.Agy {
 		switch {
 		case strings.HasPrefix(model, "gemini-"):
-			lookupProviders = append(lookupProviders, core.Gemini)
+			lookup = append(lookup, candidate{provider: core.Gemini, model: model})
 		case strings.HasPrefix(model, "claude-"):
-			lookupProviders = append(lookupProviders, core.Claude)
+			lookup = append(lookup, candidate{provider: core.Claude, model: model})
 		}
 	}
-	for _, lookupProvider := range lookupProviders {
+	// OpenCode retains the upstream provider in model identifiers. Try an
+	// explicit OpenCode override first, then reuse the underlying provider's
+	// exact catalog rate for API-equivalent estimates when OpenCode did not
+	// report a non-zero cost.
+	if provider == core.OpenCode {
+		providerID, modelID, ok := strings.Cut(model, "/")
+		if ok {
+			var underlying core.Provider
+			switch providerID {
+			case "openai":
+				underlying = core.Codex
+			case "anthropic":
+				underlying = core.Claude
+			case "google":
+				underlying = core.Gemini
+			}
+			if underlying != "" {
+				lookup = append(lookup, candidate{provider: underlying, model: modelID})
+			}
+		}
+	}
+	for _, item := range lookup {
 		var selected *Rate
 		for i := range c.rates {
 			r := &c.rates[i]
-			if r.Provider != lookupProvider || !modelMatch(r.Model, model) {
+			if r.Provider != item.provider || !modelMatch(r.Model, item.model) {
 				continue
 			}
 			eff, err := time.Parse("2006-01-02", r.EffectiveFrom)

@@ -305,7 +305,7 @@ Equivalent CLI flags override the loaded values. Use `--rebuild` after changing 
 
 ## Pricing
 
-Claude, Codex, Gemini, and recognized models used through AGY are explicitly estimates of public API list-price equivalents, not subscription charges, invoices, free-tier consumption, discounts, credits, or taxes. AGY model labels are normalized before exact lookup and use the underlying Gemini or Claude catalog rate. Unknown identifiers remain marked `unpriced` rather than inheriting a guessed family rate. Pi and OpenCode already record calculated costs; Tokenhawk labels those values `reported` and preserves them instead of applying a second price calculation.
+Claude, Codex, Gemini, and recognized models used through AGY are explicitly estimates of public API list-price equivalents, not subscription charges, invoices, free-tier consumption, discounts, credits, or taxes. AGY model labels are normalized before exact lookup and use the underlying Gemini or Claude catalog rate. Unknown identifiers remain marked `unpriced` rather than inheriting a guessed family rate. Pi and nonzero costs recorded by OpenCode are labeled `reported` and preserved instead of being repriced. When OpenCode records zero cost for a recognized `openai`, `anthropic`, or `google` model, Tokenhawk shows the underlying model's public API list-price equivalent instead.
 
 ### Anthropic-reported spend
 

@@ -175,7 +175,7 @@ CREATE TABLE message(id TEXT PRIMARY KEY,session_id TEXT NOT NULL,time_created I
 INSERT INTO session VALUES('parent','/work/opencode',NULL,'Main','build',1000,3000);
 INSERT INTO session VALUES('child','/work/opencode','parent','Explore','explore',2000,4000);
 INSERT INTO message VALUES('m1','parent',2000,'{"role":"assistant","providerID":"openai","modelID":"gpt-5","cost":0.25,"tokens":{"input":100,"output":20,"reasoning":5,"cache":{"read":40,"write":3}}}');
-INSERT INTO message VALUES('m2','child',3000,'{"role":"assistant","providerID":"anthropic","modelID":"claude-sonnet-4-5","cost":0.5,"tokens":{"input":200,"output":30,"reasoning":0,"cache":{"read":100,"write":4}}}');`)
+INSERT INTO message VALUES('m2','child',3000,'{"role":"assistant","providerID":"anthropic","modelID":"claude-sonnet-4-5","cost":0,"tokens":{"input":200,"output":30,"reasoning":0,"cache":{"read":100,"write":4}}}');`)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,7 +207,7 @@ INSERT INTO message VALUES('m2','child',3000,'{"role":"assistant","providerID":"
 	if parent.ID != "parent" || parent.Project != "/work/opencode" || parent.Usage[0].Input != 140 || parent.Usage[0].Reasoning != 5 || parent.Usage[0].CostUSD != 0.25 || parent.Usage[0].PricingStatus != "reported" {
 		t.Fatalf("unexpected OpenCode parent: %#v", parent)
 	}
-	if child == nil || child.ID != "child" || child.ParentID != "parent" || child.Name != "Explore" || child.Totals().CachedInput != 100 {
+	if child == nil || child.ID != "child" || child.ParentID != "parent" || child.Name != "Explore" || child.Totals().CachedInput != 100 || child.Usage[0].PricingStatus != "" {
 		t.Fatalf("unexpected OpenCode subagent: %#v", child)
 	}
 }

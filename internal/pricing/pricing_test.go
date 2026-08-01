@@ -62,6 +62,31 @@ func TestAgyUsesUnderlyingModelProviderRate(t *testing.T) {
 	}
 }
 
+func TestOpenCodeUsesUnderlyingModelProviderRate(t *testing.T) {
+	c, err := Load("")
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 7, 29, 0, 0, 0, 0, time.UTC)
+	for _, tc := range []struct {
+		model string
+		want  float64
+	}{
+		{"openai/gpt-5.6-sol", 5},
+		{"anthropic/claude-sonnet-4-6", 3},
+		{"google/gemini-3.5-flash", 1.5},
+	} {
+		u := c.Price(core.OpenCode, at, core.Usage{Model: tc.model, Input: 1_000_000})
+		if u.PricingStatus != "priced" || math.Abs(u.CostUSD-tc.want) > 1e-9 {
+			t.Errorf("OpenCode %s priced as %#v, want $%.2f", tc.model, u, tc.want)
+		}
+	}
+	unknown := c.Price(core.OpenCode, at, core.Usage{Model: "openrouter/some-model", Input: 1_000_000})
+	if unknown.PricingStatus != "unpriced" || unknown.CostUSD != 0 {
+		t.Fatalf("unknown OpenCode provider was guessed: %#v", unknown)
+	}
+}
+
 func TestGeminiThoughtsAreBilledAsOutput(t *testing.T) {
 	c, _ := Load("")
 	u := c.Price(core.Gemini, time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC), core.Usage{Model: "gemini-2.5-pro", Output: 100, Reasoning: 50})
