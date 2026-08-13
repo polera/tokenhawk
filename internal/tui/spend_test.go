@@ -306,7 +306,7 @@ func TestSpendBreakdownSeparatesCacheWriteTiers(t *testing.T) {
 
 func TestSpendUsesAnthropicReportedCostWithoutDoubleCountingClaudeAPIRate(t *testing.T) {
 	m := spendModel(t)
-	day := time.Now().UTC()
+	day := m.sessions[0].UpdatedAt.UTC()
 	day = time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, time.UTC)
 	m.reportedCostDays = []time.Time{day}
 	m.reportedCosts = []core.ReportedCost{
