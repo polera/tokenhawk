@@ -172,7 +172,7 @@ func (m Model) inputLine() string {
 func (m Model) footerHints() []keyHint {
 	switch m.tab {
 	case spendTab:
-		return []keyHint{{"↑↓", "scroll"}, {"t", "range"}, {"d", "since"}, {"p", "provider"}, {"Tab", "next view"}, {"?", "shortcuts"}, {"q", "quit"}}
+		return []keyHint{{"↑↓", "scroll"}, {"t", "range"}, {"d", "since"}, {"e", "JSON"}, {"x", "CSV"}, {"p", "provider"}, {"Tab", "next view"}, {"?", "shortcuts"}, {"q", "quit"}}
 	case transcriptTab:
 		return []keyHint{{"↑↓", "select"}, {"Enter", "open"}, {"/", "query"}, {"r", "refresh"}, {"p", "provider"}, {"Tab", "next view"}, {"?", "shortcuts"}, {"q", "quit"}}
 	default:

@@ -10,7 +10,7 @@ Sessions with at least 100,000 input tokens and less than an 80% cached-input ra
 
 ## Screenshots
 
-The dashboard lists session history across every provider with per-model usage, API-rate and reported cost, normalized input-to-output ratios, running subagent counts, and red high-input, low-cache warnings.
+The dashboard lists session history across multiple providers with per-model usage, API-rate and reported cost, normalized input-to-output ratios, running subagent counts, and red high-input, low-cache warnings.
 
 ![Tokenhawk dashboard showing session history across Claude, Codex, Gemini, and Pi](assets/dashboard.png)
 
@@ -18,9 +18,9 @@ Selecting a session opens a detail view that breaks out parent and subagent usag
 
 ![Tokenhawk session detail with parent and subagent breakdown](assets/detail.png)
 
-Option 3 opens a reporting view with synthetic token usage and spend grouped by provider, model, and day.
+Option 3 opens spend analysis with UTC token and cost line graphs, provider/model/day breakdowns, and explicit JSON/CSV export shortcuts.
 
-![Tokenhawk reporting view with token usage and spend breakdowns](assets/reporting.png)
+![Tokenhawk spend analysis with token and cost line graphs, breakdowns, and JSON/CSV exports](assets/reporting.png)
 
 The layout is responsive: narrow terminals collapse the table columns, navigation, and context labels to fit.
 
@@ -35,12 +35,12 @@ _Screenshots use synthetic demo data._
 - Native Claude Code and Antigravity status-line integrations and tmux-backed wrappers for every supported client
 - Separate Live, Session History, and Spend views
 - On-demand, local search across current and previous user/assistant messages
-- Spend totals and input-to-output ratios since any relative or absolute date, broken out by provider, model, and day
+- Spend totals, input-to-output ratios, and UTC token/cost line graphs since any relative or absolute date, broken out by provider, model, and day
 - Per-session and per-model input, cached, output, reasoning, tool, and total tokens
 - Parent/subagent accounting with running-agent counts and detailed child usage
 - Public API-rate costs and provider-reported costs with explicit status
 - High-input, low-cache warnings at a documented threshold
-- JSON and CSV export for the visible session set or one selected session; detail exports include the loaded conversation
+- View-specific JSON and CSV exports: visible sessions, selected-session detail with loaded conversation, or spend totals, breakdowns, and daily UTC points
 - Rebuildable SQLite index; provider transcript files remain untouched
 
 ## Install, build, and run
@@ -251,13 +251,14 @@ tokenhawk wrap opencode --session SESSION_ID
 | `/` | Filter by project or model metadata |
 | `t` | Cycle the spend window (spend view) |
 | `d` | Type a spend window (spend view) |
+| `e` | Export the current view as JSON |
+| `x` | Export the current view as CSV |
 | `enter` | Session detail, including a provider-specific resume command |
-| `e` / `x` | Export the visible set as JSON / CSV; in details, export that session with its loaded conversation |
 | `q` | Quit |
 
 ## Spend since a date
 
-Press `3` for tokens and cost across a window instead of per session. The view totals input, cached input, output, and cost for the window, then breaks the same window out by provider, by model, and by day:
+Press `3` for tokens and cost across a window instead of per session. The view totals input, cached input, output, and cost for the window, graphs token usage and cost over time, then breaks the same window out by provider, by model, and by day:
 
 ```text
 SPEND · last 7 days
@@ -265,6 +266,23 @@ SPEND · last 7 days
 
 TOTAL  tokens 17.30M  in 16.71M  cached 15.99M (96%)  out 238.3k  i:o 70.1:1
        $20.184584 API rate
+
+TOKEN USAGE & COST OVER TIME (UTC)  · daily totals
+  TOKENS  peak 5.17M
+   6.00M│                         ⣀●
+       │ · · · · · · · · · · ⡠⠊
+   2.00M│       ●⠢⡀     ⡠●⠊
+       │⡠●⠊     ⠑●⠊
+      0└──────────────────────────
+       Jul 07      Jul 10       Jul 13
+
+  COST (USD)  peak $6.29
+  $7.50│                         ⣀●
+       │ · · · · · · · · · · ⡠⠊
+  $2.50│       ●⠢⡀     ⡠●⠊
+       │⡠●⠊     ⠑●⠊
+  $0.00└──────────────────────────
+       Jul 07      Jul 10       Jul 13
 
 BY PROVIDER
   codex  ████████████    12 sess  tokens 10.25M  in 10.14M  cached 9.42M  out 117.5k  i:o 86.3:1  $11.8310
@@ -290,7 +308,13 @@ tokenhawk --since 30d
 tokenhawk --since 2026-07-01
 ```
 
-Windows accept RFC 3339 timestamps, `YYYY-MM-DD` dates, relative offsets (`90m`, `24h`, `7d`, `2w`, `3mo`, `1y`, or any Go duration), and the keywords `today`, `yesterday`, `wtd`, `mtd`, `ytd`, and `all`. Relative windows keep rolling while Tokenhawk stays open. The provider filter and the `/` search narrow the spend view too, and `e` and `x` export exactly the sessions the window covers.
+Windows accept RFC 3339 timestamps, `YYYY-MM-DD` dates, relative offsets (`90m`, `24h`, `7d`, `2w`, `3mo`, `1y`, or any Go duration), and the keywords `today`, `yesterday`, `wtd`, `mtd`, `ytd`, and `all`. Relative windows keep rolling while Tokenhawk stays open. The provider filter and the `/` search narrow the spend view and its exports too.
+
+On the spend view, `e` and `x` export the displayed totals and provider, model,
+and day breakdowns rather than raw sessions. The export also includes one
+token-and-cost time-series point per UTC day, including zero-value days. Daily
+resolution is the finest available because provider stores expose running
+session totals rather than timestamped token events.
 
 Provider stores record one running total per session rather than a timestamped ledger, so a session's whole usage is counted on the day it was last updated. Sessions that span days or that resume after the window opens are therefore attributed to that single day, which the view states rather than implying a per-day ledger it cannot derive.
 

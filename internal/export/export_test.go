@@ -1,6 +1,8 @@
 package export
 
 import (
+	"encoding/csv"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -75,5 +77,68 @@ func TestDetailExportsIncludeFullConversation(t *testing.T) {
 				t.Fatalf("detail CSV has no conversation columns or rows:\n%s", text)
 			}
 		})
+	}
+}
+
+func TestSpendExportsContainViewAggregatesAndTimeseries(t *testing.T) {
+	since := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
+	report := SpendReport{
+		View: SpendView{
+			WindowSpec: "7d", WindowLabel: "last 7 days", Since: &since,
+			Until: time.Date(2026, 8, 12, 18, 0, 0, 0, time.UTC), Provider: core.Claude,
+			Search: "project", Attribution: "last session update UTC day", TimeseriesResolution: "1 day UTC",
+		},
+		Totals: SpendAggregate{Sessions: 2, Usage: SpendUsage{Input: 100, Total: 120}, Cost: SpendCost{ReportedUSD: 1.25, APIRateUSD: .75, TotalUSD: 2}},
+		Timeseries: []SpendPoint{
+			{PeriodStart: time.Date(2026, 8, 10, 0, 0, 0, 0, time.UTC), PeriodEnd: time.Date(2026, 8, 11, 0, 0, 0, 0, time.UTC), Sessions: 1, Usage: SpendUsage{Total: 120}, Cost: SpendCost{TotalUSD: 2}},
+			{PeriodStart: time.Date(2026, 8, 11, 0, 0, 0, 0, time.UTC), PeriodEnd: time.Date(2026, 8, 12, 0, 0, 0, 0, time.UTC)},
+		},
+		Providers: []SpendAggregate{{Name: "claude", Sessions: 2, Usage: SpendUsage{Total: 120}, Cost: SpendCost{TotalUSD: 2}}},
+		Models:    []SpendAggregate{{Name: "claude-opus", Sessions: 2, Usage: SpendUsage{Total: 120}, Cost: SpendCost{TotalUSD: 2}}},
+		Days:      []SpendAggregate{{Name: "2026-08-10", Sessions: 1, Usage: SpendUsage{Total: 120}, Cost: SpendCost{TotalUSD: 2}}},
+	}
+
+	jsonPath := filepath.Join(t.TempDir(), "spend.json")
+	if err := WriteSpend(jsonPath, "json", report); err != nil {
+		t.Fatal(err)
+	}
+	contents, err := os.ReadFile(jsonPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document SpendDocument
+	if err := json.Unmarshal(contents, &document); err != nil {
+		t.Fatal(err)
+	}
+	if document.Kind != "spend" || document.Version != "1" || document.Totals.Cost.TotalUSD != 2 || len(document.Timeseries) != 2 {
+		t.Fatalf("unexpected spend JSON document: %#v", document)
+	}
+	if document.Timeseries[1].Usage.Total != 0 || document.View.TimeseriesResolution != "1 day UTC" {
+		t.Fatalf("spend JSON lost zero point or resolution: %#v", document)
+	}
+
+	csvPath := filepath.Join(t.TempDir(), "spend.csv")
+	if err := WriteSpend(csvPath, "csv", report); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(csvPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	rows, err := csv.NewReader(f).ReadAll()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 7 {
+		t.Fatalf("spend CSV rows = %d, want header + total + 2 points + 3 breakdowns: %#v", len(rows), rows)
+	}
+	for index, want := range []string{"total", "timeseries", "timeseries", "provider", "model", "day"} {
+		if rows[index+1][0] != want {
+			t.Fatalf("spend CSV row %d type = %q, want %q", index+1, rows[index+1][0], want)
+		}
+	}
+	if rows[3][12] != "0" || rows[3][24] != "1 day UTC" {
+		t.Fatalf("spend CSV lost zero point or resolution: %#v", rows[3])
 	}
 }

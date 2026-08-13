@@ -367,9 +367,9 @@ func (m Model) updateSpend(k tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.searching = true
 		m.notice = "type to filter projects/models; enter applies, esc cancels"
 	case "e":
-		return m, m.export("json")
+		return m, m.exportSpend("json")
 	case "x":
-		return m, m.export("csv")
+		return m, m.exportSpend("csv")
 	case "j", "down":
 		m.scrollSpend(1)
 	case "k", "up":
@@ -607,6 +607,16 @@ func (m Model) exportSessions(format string, sessions []core.Session) tea.Cmd {
 		name := fmt.Sprintf("tokenhawk-%s.%s", time.Now().Format("20060102-150405"), format)
 		path, _ := filepath.Abs(name)
 		err := exporter.Write(path, format, sessions)
+		return exportMsg{path: path, err: err}
+	}
+}
+func (m Model) exportSpend(format string) tea.Cmd {
+	until := time.Now()
+	report := m.spendExportReport(until)
+	return func() tea.Msg {
+		name := fmt.Sprintf("tokenhawk-spend-%s.%s", until.Format("20060102-150405"), format)
+		path, _ := filepath.Abs(name)
+		err := exporter.WriteSpend(path, format, report)
 		return exportMsg{path: path, err: err}
 	}
 }

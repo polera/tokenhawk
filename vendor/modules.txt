@@ -10,6 +10,12 @@ charm.land/bubbletea/v2
 # charm.land/lipgloss/v2 v2.0.5
 ## explicit; go 1.25.0
 charm.land/lipgloss/v2
+# github.com/NimbleMarkets/ntcharts/v2 v2.2.0
+## explicit; go 1.25.0
+github.com/NimbleMarkets/ntcharts/v2/canvas
+github.com/NimbleMarkets/ntcharts/v2/canvas/graph
+github.com/NimbleMarkets/ntcharts/v2/canvas/runes
+github.com/NimbleMarkets/ntcharts/v2/linechart
 # github.com/charmbracelet/colorprofile v0.4.3
 ## explicit; go 1.25.0
 github.com/charmbracelet/colorprofile
@@ -46,6 +52,9 @@ github.com/fsnotify/fsnotify/internal
 # github.com/google/uuid v1.6.0
 ## explicit
 github.com/google/uuid
+# github.com/lrstanley/bubblezone/v2 v2.0.0
+## explicit; go 1.24.2
+github.com/lrstanley/bubblezone/v2
 # github.com/lucasb-eyer/go-colorful v1.4.0
 ## explicit; go 1.12
 github.com/lucasb-eyer/go-colorful

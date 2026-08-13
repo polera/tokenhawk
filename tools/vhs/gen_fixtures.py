@@ -38,17 +38,17 @@ claude = [
     ("payments-core", "claude-opus-4-8", 42000, 1_520_000, 96000, 58_300, 1,
         [("Explore", "claude-sonnet-5", 8000, 210_000, 4_400, 12_100, 1, "running"),
          ("code-reviewer", "claude-sonnet-5", 5200, 96_000, 2_100, 7_800, 14, "completed")]),
-    ("checkout-flow", "claude-sonnet-5", 6900, 1_040_000, 51_000, 44_600, 2,
+    ("checkout-flow", "claude-sonnet-5", 6900, 1_040_000, 51_000, 44_600, 220,
         [("Explore", "claude-sonnet-5", 4100, 88_000, 1_900, 6_200, 2, "running")]),
     # low-cache alarm session (>=100k input, <80% cached) -> red row
-    ("data-pipeline", "claude-opus-4-8", 61_000, 86_500, 12_000, 21_400, 18, []),
-    ("web-dashboard", "claude-sonnet-5", 3200, 640_000, 28_000, 39_100, 42, []),
-    ("search-index", "claude-opus-4-8", 12_000, 1_120_000, 44_000, 52_700, 95, []),
-    ("notifications", "claude-haiku-4-5-20251001", 2100, 128_000, 6_400, 18_900, 140, []),
-    ("infra-terraform", "claude-sonnet-5", 4800, 331_000, 15_000, 22_400, 320, []),
-    ("docs-site", "claude-sonnet-5", 1800, 92_000, 3_100, 11_600, 610, []),
-    ("billing-service", "claude-opus-4-8", 22_000, 878_000, 36_000, 40_300, 1300, []),
-    ("ml-training", "claude-sonnet-5", 9200, 425_000, 19_000, 2_400, 2600, []),
+    ("data-pipeline", "claude-opus-4-8", 61_000, 86_500, 12_000, 21_400, 1500, []),
+    ("web-dashboard", "claude-sonnet-5", 3200, 640_000, 28_000, 39_100, 3000, []),
+    ("search-index", "claude-opus-4-8", 12_000, 1_120_000, 44_000, 52_700, 4400, []),
+    ("notifications", "claude-haiku-4-5-20251001", 2100, 128_000, 6_400, 18_900, 5900, []),
+    ("infra-terraform", "claude-sonnet-5", 4800, 331_000, 15_000, 22_400, 8700, []),
+    ("docs-site", "claude-sonnet-5", 1800, 92_000, 3_100, 11_600, 9100, []),
+    ("billing-service", "claude-opus-4-8", 22_000, 878_000, 36_000, 40_300, 9800, []),
+    ("ml-training", "claude-sonnet-5", 9200, 425_000, 19_000, 2_400, 11000, []),
 ]
 for project, model, inp, cread, ccreate, out, age, subs in claude:
     cwd = f"/home/dev/src/{project}"
@@ -77,9 +77,9 @@ for project, model, inp, cread, ccreate, out, age, subs in claude:
 # ---- Codex sessions --------------------------------------------------------
 # fields: project, model, input, cached, output, reasoning, total, age_min
 codex = [
-    ("acme-api", "gpt-5.6-sol", 43_222_400, 41_890_000, 207_600, 64_300, 43_430_000, 12),
-    ("search-index", "gpt-5.3-codex", 22_763_800, 22_330_000, 76_200, 16_900, 22_840_000, 55),
-    ("infra-terraform", "gpt-5.6-sol", 4_291_600, 4_120_000, 18_400, 9_200, 4_310_000, 900),
+    ("acme-api", "gpt-5.6-sol", 8_122_400, 7_690_000, 107_600, 34_300, 8_230_000, 12),
+    ("search-index", "gpt-5.3-codex", 14_963_800, 14_330_000, 76_200, 16_900, 15_040_000, 2900),
+    ("infra-terraform", "gpt-5.6-sol", 5_991_600, 5_720_000, 28_400, 9_200, 6_020_000, 8600),
 ]
 for project, model, inp, cached, out, reason, total, age in codex:
     cwd = f"/home/dev/src/{project}"
@@ -99,8 +99,8 @@ for project, model, inp, cached, out, reason, total, age in codex:
 # fields: project, provider, model, input, output, cacheRead, cacheWrite, total, cost, age
 pi = [
     ("acme-web", "anthropic", "claude-sonnet-4-5", 26_100, 737, 0, 4_200, 26_800, 0.1524, 70),
-    ("payments-core", "openai", "codex/gpt-5.3", 2, 2, 0, 0, 2_200, 0.0137, 130),
-    ("checkout-flow", "anthropic", "claude-sonnet-4-5", 2_300, 1_100, 2_200, 900, 9_300, 0.0665, 340),
+    ("payments-core", "openai", "codex/gpt-5.3", 2, 2, 0, 0, 2_200, 0.0137, 4300),
+    ("checkout-flow", "anthropic", "claude-sonnet-4-5", 2_300, 1_100, 2_200, 900, 9_300, 0.0665, 8500),
 ]
 for project, prov, model, inp, out, cread, cwrite, total, cost, age in pi:
     cwd = f"/home/dev/src/{project}"
@@ -123,10 +123,10 @@ os.makedirs(os.path.join(gdir, "chats"), exist_ok=True)
 with open(os.path.join(gdir, ".project_root"), "w") as f:
     f.write(cwd)
 with open(os.path.join(gdir, "chats", "session-1.json"), "w") as f:
-    json.dump({"sessionId": sid, "startTime": ts(200), "lastUpdated": ts(160),
+    json.dump({"sessionId": sid, "startTime": ts(5850), "lastUpdated": ts(5800),
                "messages": [{"model": "gemini-3-pro-preview", "tokens": {
                    "Input": 148_000, "Cached": 92_000, "Output": 6_800,
                    "Thoughts": 3_400, "Tool": 1_200, "Total": 159_400}}]}, f)
-backdate(os.path.join(gdir, "chats", "session-1.json"), 160)
+backdate(os.path.join(gdir, "chats", "session-1.json"), 5800)
 
 print("fixtures written to", FIX)

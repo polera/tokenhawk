@@ -1,10 +1,10 @@
-# Reporting view: spend and token usage grouped by provider, model, and day
+# Reporting view: daily token and cost lines with current-view export controls
 Output tools/vhs/.render.gif
 
 Set Shell zsh
 Set FontSize 14
 Set Width 1500
-Set Height 900
+Set Height 1100
 Set Padding 20
 
 Hide

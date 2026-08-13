@@ -1,11 +1,14 @@
 package tui
 
 import (
+	"os"
 	"strings"
 	"testing"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 	"github.com/polera/tokenhawk/internal/core"
 	"github.com/polera/tokenhawk/internal/pricing"
 )
@@ -129,6 +132,150 @@ func TestSpendWindowExcludesSessionsUpdatedBeforeSince(t *testing.T) {
 	m.rebuild()
 	if len(m.shown) != 3 || !strings.Contains(m.spendContent(), "all time") {
 		t.Fatalf("all-time window did not include every session: %d shown", len(m.shown))
+	}
+}
+
+func TestSpendTrendIncludesMissingDaysAndReconciledCost(t *testing.T) {
+	start := time.Date(2026, 8, 1, 12, 0, 0, 0, time.UTC)
+	records := []spendRecord{
+		{day: start, usage: core.Usage{Total: 100}, apiRateCost: 1.25},
+		{day: start.AddDate(0, 0, 2), usage: core.Usage{Total: 300}, reportedCost: 2.50},
+	}
+	trend := buildSpendTrend(records, 10)
+	if len(trend.points) != 3 || trend.bucketDays != 1 {
+		t.Fatalf("daily trend shape = %#v", trend)
+	}
+	if trend.points[0].tokens != 100 || trend.points[0].cost != 1.25 {
+		t.Fatalf("first trend point = %#v", trend.points[0])
+	}
+	if trend.points[1].tokens != 0 || trend.points[1].cost != 0 {
+		t.Fatalf("missing day was not represented as zero: %#v", trend.points[1])
+	}
+	if trend.points[2].tokens != 300 || trend.points[2].cost != 2.50 {
+		t.Fatalf("last trend point = %#v", trend.points[2])
+	}
+	bounded := buildSpendTrend(records, 10, start.AddDate(0, 0, -2), start.AddDate(0, 0, 4))
+	if len(bounded.points) != 7 || bounded.points[2].tokens != 100 || bounded.points[4].tokens != 300 {
+		t.Fatalf("selected window was not preserved in trend: %#v", bounded)
+	}
+}
+
+func TestSpendExportUsesDailyResolutionAndReconciledCurrentView(t *testing.T) {
+	m := spendModel(t)
+	day := m.sessions[0].UpdatedAt.UTC().Truncate(24 * time.Hour)
+	m.spendSince = day.AddDate(0, 0, -2)
+	m.spendSpec = "3d"
+	m.reportedCostDays = []time.Time{day}
+	m.reportedCosts = []core.ReportedCost{{
+		Provider: core.Claude, Day: day, Model: "claude-opus-4-8",
+		AmountNanoUSD: 1_500_000_000, Source: "anthropic_admin_cost",
+	}}
+	m.provider = core.Claude
+	m.rebuild()
+	m.spendSince = day.AddDate(0, 0, -2)
+	m.spendSpec = day.AddDate(0, 0, -2).Format("2006-01-02")
+	report := m.spendExportReport(day.Add(12 * time.Hour))
+	if report.View.Provider != core.Claude || report.View.WindowSpec != m.spendSpec || report.View.TimeseriesResolution != "1 day UTC" {
+		t.Fatalf("spend export did not capture current view: %#v", report.View)
+	}
+	if len(report.Timeseries) != 3 {
+		t.Fatalf("spend export timeseries has %d points, want three daily points: %#v", len(report.Timeseries), report.Timeseries)
+	}
+	if report.Timeseries[0].Usage.Total != 0 || report.Timeseries[1].Usage.Total != 0 {
+		t.Fatalf("spend export omitted zero-valued UTC days: %#v", report.Timeseries)
+	}
+	last := report.Timeseries[2]
+	if last.Usage.Total != 531_000 || last.Cost.ReportedUSD != 1.5 || last.Cost.APIRateUSD != 0 {
+		t.Fatalf("spend export did not use reconciled visible records: %#v", last)
+	}
+	if report.Totals.Usage.Total != last.Usage.Total || report.Totals.Cost.TotalUSD != 1.5 {
+		t.Fatalf("spend export totals differ from timeseries: totals=%#v point=%#v", report.Totals, last)
+	}
+}
+
+func TestSpendExportKeysCreateSpendSnapshotCommands(t *testing.T) {
+	m := spendModel(t)
+	m.tab = spendTab
+	m.rebuild()
+	for _, keyName := range []string{"e", "x"} {
+		updated, cmd := m.Update(key(keyName))
+		m = updated.(Model)
+		if cmd == nil {
+			t.Fatalf("%s did not create a spend export command", keyName)
+		}
+		message := cmd().(exportMsg)
+		if message.err != nil {
+			t.Fatal(message.err)
+		}
+		if !strings.Contains(message.path, "tokenhawk-spend-") {
+			t.Fatalf("%s used a non-spend export path: %s", keyName, message.path)
+		}
+		if err := os.Remove(message.path); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestSpendTrendBucketsLongRangesAndRendersBothSeries(t *testing.T) {
+	start := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	records := []spendRecord{
+		{day: start, usage: core.Usage{Total: 100}, apiRateCost: 1},
+		{day: start.AddDate(0, 0, 99), usage: core.Usage{Total: 200}, apiRateCost: 2},
+	}
+	trend := buildSpendTrend(records, 10)
+	if len(trend.points) != 10 || trend.bucketDays != 10 {
+		t.Fatalf("long trend was not condensed to ten 10-day buckets: %#v", trend)
+	}
+	m := Model{width: 38}
+	view := m.spendTrend(records)
+	plain := ansi.Strip(view)
+	for _, want := range []string{"TOKEN USAGE & COST OVER TIME (UTC)", "5-day totals", "TOKENS", "COST (USD)", "peak 200", "peak $2.00", "Jan 01", "Apr 06"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("spend trend missing %q:\n%s", want, view)
+		}
+	}
+	for _, want := range []string{"200", "$2.00", "└", "·"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("spend trend line chart missing %q:\n%s", want, view)
+		}
+	}
+}
+
+func TestSpendLineChartFitsRequestedWidthAndDrawsPoints(t *testing.T) {
+	days := []time.Time{
+		time.Date(2026, 8, 1, 0, 0, 0, 0, time.UTC),
+		time.Date(2026, 8, 2, 0, 0, 0, 0, time.UTC),
+		time.Date(2026, 8, 3, 0, 0, 0, 0, time.UTC),
+	}
+	chart := spendLineChart("TOKENS", []float64{1, 100, 50}, days, 40, func(value float64) string {
+		return human(int64(value))
+	}, titleStyle)
+	for _, line := range strings.Split(chart, "\n") {
+		if got := lipgloss.Width(line); got > 40 {
+			t.Fatalf("line chart width = %d, want <= 40:\n%s", got, chart)
+		}
+	}
+	plain := ansi.Strip(chart)
+	if !strings.Contains(plain, "●") {
+		t.Fatalf("short line chart did not render points:\n%s", chart)
+	}
+	if !strings.Contains(plain, "Aug 01") || !strings.Contains(plain, "Aug 03") {
+		t.Fatalf("line chart did not label its UTC date axis:\n%s", chart)
+	}
+}
+
+func TestNiceChartMaxProducesReadableTicks(t *testing.T) {
+	for _, test := range []struct {
+		peak, want float64
+	}{
+		{200, 300},
+		{5_170_000, 6_000_000},
+		{6.29, 7.5},
+		{0, 1},
+	} {
+		if got := niceChartMax(test.peak, 3); got != test.want {
+			t.Fatalf("niceChartMax(%v, 3) = %v, want %v", test.peak, got, test.want)
+		}
 	}
 }
 

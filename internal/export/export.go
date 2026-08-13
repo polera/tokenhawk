@@ -32,6 +32,67 @@ type DetailDocument struct {
 	Conversation []Message `json:"conversation,omitempty"`
 }
 
+type SpendView struct {
+	WindowSpec           string        `json:"window_spec"`
+	WindowLabel          string        `json:"window_label"`
+	Since                *time.Time    `json:"since,omitempty"`
+	Until                time.Time     `json:"until"`
+	Provider             core.Provider `json:"provider,omitempty"`
+	Search               string        `json:"search,omitempty"`
+	Attribution          string        `json:"attribution"`
+	TimeseriesResolution string        `json:"timeseries_resolution"`
+}
+
+type SpendUsage struct {
+	Input           int64 `json:"input_tokens"`
+	CachedInput     int64 `json:"cached_input_tokens"`
+	CacheCreation   int64 `json:"cache_creation_tokens"`
+	CacheCreation1h int64 `json:"cache_creation_1h_tokens"`
+	Output          int64 `json:"output_tokens"`
+	Reasoning       int64 `json:"reasoning_tokens"`
+	Tool            int64 `json:"tool_tokens"`
+	Total           int64 `json:"total_tokens"`
+}
+
+type SpendCost struct {
+	ReportedUSD      float64 `json:"reported_usd"`
+	APIRateUSD       float64 `json:"api_rate_usd"`
+	TotalUSD         float64 `json:"total_usd"`
+	HasUnpricedUsage bool    `json:"has_unpriced_usage"`
+}
+
+type SpendAggregate struct {
+	Name     string     `json:"name,omitempty"`
+	Sessions int        `json:"sessions"`
+	Usage    SpendUsage `json:"usage"`
+	Cost     SpendCost  `json:"cost"`
+}
+
+type SpendPoint struct {
+	PeriodStart time.Time  `json:"period_start"`
+	PeriodEnd   time.Time  `json:"period_end"`
+	Sessions    int        `json:"sessions"`
+	Usage       SpendUsage `json:"usage"`
+	Cost        SpendCost  `json:"cost"`
+}
+
+type SpendReport struct {
+	View       SpendView        `json:"view"`
+	Totals     SpendAggregate   `json:"totals"`
+	Timeseries []SpendPoint     `json:"timeseries"`
+	Providers  []SpendAggregate `json:"by_provider"`
+	Models     []SpendAggregate `json:"by_model"`
+	Days       []SpendAggregate `json:"by_day"`
+}
+
+type SpendDocument struct {
+	Version    string    `json:"version"`
+	Kind       string    `json:"kind"`
+	ExportedAt time.Time `json:"exported_at"`
+	CostBasis  string    `json:"cost_basis"`
+	SpendReport
+}
+
 func Write(path, format string, sessions []core.Session) error {
 	return write(path, format, sessions, nil, false)
 }
@@ -43,7 +104,39 @@ func WriteDetail(path, format string, session core.Session, conversation []Messa
 	return write(path, format, []core.Session{session}, conversation, true)
 }
 
+func WriteSpend(path, format string, report SpendReport) error {
+	return writeAtomic(path, func(w io.Writer) error {
+		switch format {
+		case "json":
+			return writeSpendJSON(w, report)
+		case "csv":
+			return writeSpendCSV(w, report)
+		default:
+			return fmt.Errorf("unsupported export format %q", format)
+		}
+	})
+}
+
 func write(path, format string, sessions []core.Session, conversation []Message, detail bool) error {
+	return writeAtomic(path, func(w io.Writer) (err error) {
+		switch format {
+		case "json":
+			if detail {
+				return writeDetailJSON(w, sessions, conversation)
+			}
+			return writeJSON(w, sessions)
+		case "csv":
+			if detail {
+				return writeDetailCSV(w, sessions, conversation)
+			}
+			return writeCSV(w, sessions)
+		default:
+			return fmt.Errorf("unsupported export format %q", format)
+		}
+	})
+}
+
+func writeAtomic(path string, render func(io.Writer) error) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return err
@@ -60,22 +153,7 @@ func write(path, format string, sessions []core.Session, conversation []Message,
 			_ = os.Remove(name)
 		}
 	}()
-	switch format {
-	case "json":
-		if detail {
-			err = writeDetailJSON(tmp, sessions, conversation)
-		} else {
-			err = writeJSON(tmp, sessions)
-		}
-	case "csv":
-		if detail {
-			err = writeDetailCSV(tmp, sessions, conversation)
-		} else {
-			err = writeCSV(tmp, sessions)
-		}
-	default:
-		err = fmt.Errorf("unsupported export format %q", format)
-	}
+	err = render(tmp)
 	if err != nil {
 		return err
 	}
@@ -105,6 +183,78 @@ func writeDetailJSON(w io.Writer, sessions []core.Session, conversation []Messag
 
 func document(sessions []core.Session) Document {
 	return Document{Version: "2", ExportedAt: time.Now().UTC(), CostBasis: "public API list-rate USD", Sessions: sessions}
+}
+
+func writeSpendJSON(w io.Writer, report SpendReport) error {
+	e := json.NewEncoder(w)
+	e.SetIndent("", "  ")
+	return e.Encode(SpendDocument{
+		Version: "1", Kind: "spend", ExportedAt: time.Now().UTC(),
+		CostBasis:   "provider-reported organization billing where available; otherwise public API list-rate USD",
+		SpendReport: report,
+	})
+}
+
+var spendCSVHeader = []string{
+	"row_type", "name", "period_start", "period_end", "sessions",
+	"input_tokens", "cached_input_tokens", "cache_creation_tokens", "cache_creation_1h_tokens",
+	"output_tokens", "reasoning_tokens", "tool_tokens", "total_tokens",
+	"reported_cost_usd", "api_rate_cost_usd", "total_cost_usd", "has_unpriced_usage",
+	"window_spec", "window_label", "window_since", "window_until", "provider_filter", "search_filter",
+	"attribution", "timeseries_resolution",
+}
+
+func writeSpendCSV(w io.Writer, report SpendReport) error {
+	c := csv.NewWriter(w)
+	if err := c.Write(spendCSVHeader); err != nil {
+		return err
+	}
+	if err := c.Write(spendCSVRow("total", report.Totals.Name, time.Time{}, time.Time{}, report.Totals, report.View)); err != nil {
+		return err
+	}
+	for _, point := range report.Timeseries {
+		aggregate := SpendAggregate{Sessions: point.Sessions, Usage: point.Usage, Cost: point.Cost}
+		if err := c.Write(spendCSVRow("timeseries", "", point.PeriodStart, point.PeriodEnd, aggregate, report.View)); err != nil {
+			return err
+		}
+	}
+	for _, section := range []struct {
+		rowType string
+		rows    []SpendAggregate
+	}{{"provider", report.Providers}, {"model", report.Models}, {"day", report.Days}} {
+		for _, aggregate := range section.rows {
+			if err := c.Write(spendCSVRow(section.rowType, aggregate.Name, time.Time{}, time.Time{}, aggregate, report.View)); err != nil {
+				return err
+			}
+		}
+	}
+	c.Flush()
+	return c.Error()
+}
+
+func spendCSVRow(rowType, name string, start, end time.Time, aggregate SpendAggregate, view SpendView) []string {
+	date := func(value time.Time) string {
+		if value.IsZero() {
+			return ""
+		}
+		return value.UTC().Format(time.RFC3339Nano)
+	}
+	u, cost := aggregate.Usage, aggregate.Cost
+	return []string{
+		rowType, name, date(start), date(end), strconv.Itoa(aggregate.Sessions),
+		i(u.Input), i(u.CachedInput), i(u.CacheCreation), i(u.CacheCreation1h), i(u.Output), i(u.Reasoning), i(u.Tool), i(u.Total),
+		strconv.FormatFloat(cost.ReportedUSD, 'f', 9, 64), strconv.FormatFloat(cost.APIRateUSD, 'f', 9, 64),
+		strconv.FormatFloat(cost.TotalUSD, 'f', 9, 64), strconv.FormatBool(cost.HasUnpricedUsage),
+		view.WindowSpec, view.WindowLabel, datePointer(view.Since), date(view.Until), string(view.Provider), view.Search,
+		view.Attribution, view.TimeseriesResolution,
+	}
+}
+
+func datePointer(value *time.Time) string {
+	if value == nil {
+		return ""
+	}
+	return value.UTC().Format(time.RFC3339Nano)
 }
 
 var csvHeader = []string{"provider", "session_id", "project", "started_at", "updated_at", "active", "row_type", "subagent_id", "subagent_name", "agent_path", "agent_status", "agent_running", "running_subagents", "total_subagents", "model", "input_tokens", "cached_input_tokens", "cache_creation_tokens", "cache_creation_1h_tokens", "output_tokens", "reasoning_tokens", "tool_tokens", "total_tokens", "api_cost_usd", "pricing_status", "source_health"}

@@ -2,11 +2,16 @@ package tui
 
 import (
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"time"
 
+	"charm.land/lipgloss/v2"
+	"github.com/NimbleMarkets/ntcharts/v2/canvas"
+	"github.com/NimbleMarkets/ntcharts/v2/linechart"
 	"github.com/polera/tokenhawk/internal/core"
+	exporter "github.com/polera/tokenhawk/internal/export"
 	"github.com/polera/tokenhawk/internal/pricing"
 	"github.com/polera/tokenhawk/internal/timerange"
 )
@@ -291,10 +296,277 @@ func (m Model) spendContent() string {
 		fmt.Fprintf(&b, "%s\n", cacheAlarmText("this window", total))
 	}
 	b.WriteString("\n")
+	b.WriteString(m.spendTrend(records))
 	b.WriteString(m.spendSection("BY PROVIDER", groupRecordsByProvider(records), 0, "provider", false))
 	b.WriteString(m.spendSection("BY MODEL", groupRecordsByModel(records), 0, "model", true))
 	b.WriteString(m.spendSection("BY DAY (UTC)", groupRecordsByDay(records), spendDayRows, "earlier day", false))
 	return b.String()
+}
+
+type spendTrendPoint struct {
+	day    time.Time
+	tokens int64
+	cost   float64
+}
+
+type spendTrendData struct {
+	points     []spendTrendPoint
+	from, to   time.Time
+	bucketDays int
+}
+
+func buildSpendTrend(records []spendRecord, maxPoints int, bounds ...time.Time) spendTrendData {
+	if len(records) == 0 || maxPoints <= 0 {
+		return spendTrendData{}
+	}
+	from := records[0].day.UTC().Truncate(24 * time.Hour)
+	to := from
+	for _, record := range records[1:] {
+		day := record.day.UTC().Truncate(24 * time.Hour)
+		if day.Before(from) {
+			from = day
+		}
+		if day.After(to) {
+			to = day
+		}
+	}
+	if len(bounds) == 2 {
+		boundFrom := bounds[0].UTC().Truncate(24 * time.Hour)
+		boundTo := bounds[1].UTC().Truncate(24 * time.Hour)
+		if boundFrom.Before(from) {
+			from = boundFrom
+		}
+		if boundTo.After(to) {
+			to = boundTo
+		}
+	}
+	spanDays := int(to.Sub(from)/(24*time.Hour)) + 1
+	bucketDays := max(1, (spanDays+maxPoints-1)/maxPoints)
+	points := make([]spendTrendPoint, (spanDays+bucketDays-1)/bucketDays)
+	for i := range points {
+		points[i].day = from.AddDate(0, 0, i*bucketDays)
+	}
+	for _, record := range records {
+		day := record.day.UTC().Truncate(24 * time.Hour)
+		index := int(day.Sub(from)/(24*time.Hour)) / bucketDays
+		points[index].tokens += record.usage.Total
+		points[index].cost += record.reportedCost + record.apiRateCost
+	}
+	return spendTrendData{points: points, from: from, to: to, bucketDays: bucketDays}
+}
+
+func (m Model) spendTrend(records []spendRecord) string {
+	width := 80
+	if m.width > 0 {
+		width = max(18, m.width)
+	}
+	maxPoints := max(2, min(64, width-14))
+	var bounds []time.Time
+	if !m.spendSince.IsZero() {
+		bounds = []time.Time{m.spendSince, time.Now()}
+	}
+	trend := buildSpendTrend(records, maxPoints, bounds...)
+	if len(trend.points) == 0 {
+		return ""
+	}
+	tokens := make([]float64, len(trend.points))
+	costs := make([]float64, len(trend.points))
+	for i, point := range trend.points {
+		tokens[i] = float64(point.tokens)
+		costs[i] = point.cost
+	}
+	days := make([]time.Time, len(trend.points))
+	for i, point := range trend.points {
+		days[i] = point.day
+	}
+	bucketLabel := "daily totals"
+	if trend.bucketDays > 1 {
+		bucketLabel = fmt.Sprintf("%d-day totals", trend.bucketDays)
+	}
+	var b strings.Builder
+	b.WriteString(titleStyle.Render("TOKEN USAGE & COST OVER TIME (UTC)"))
+	if m.width == 0 || m.width >= 60 {
+		b.WriteString("  " + muted.Render("· "+bucketLabel) + "\n")
+	} else {
+		b.WriteString("\n  " + muted.Render(bucketLabel) + "\n")
+	}
+	b.WriteString(spendLineChart("TOKENS", tokens, days, width, func(value float64) string {
+		return human(int64(value))
+	}, titleStyle))
+	b.WriteString("\n")
+	b.WriteString(spendLineChart("COST (USD)", costs, days, width, func(value float64) string {
+		return fmt.Sprintf("$%.2f", value)
+	}, good))
+	b.WriteString("\n")
+	return b.String()
+}
+
+func (m Model) spendExportReport(until time.Time) exporter.SpendReport {
+	records := m.spendRecords()
+	view := exporter.SpendView{
+		WindowSpec:           m.spendSpec,
+		WindowLabel:          timerange.Label(m.spendSpec),
+		Until:                until.UTC(),
+		Provider:             m.provider,
+		Search:               m.search,
+		Attribution:          "usage is attributed to the UTC day of the last session update; period_end is exclusive",
+		TimeseriesResolution: "1 day UTC",
+	}
+	if !m.spendSince.IsZero() {
+		since := m.spendSince.UTC()
+		view.Since = &since
+	}
+	report := exporter.SpendReport{
+		View:      view,
+		Totals:    spendExportAggregate("", len(m.shown), records),
+		Providers: spendExportAggregates(groupRecordsByProvider(records)),
+		Models:    spendExportAggregates(groupRecordsByModel(records)),
+		Days:      spendExportAggregates(groupRecordsByDay(records)),
+	}
+	if len(records) == 0 {
+		return report
+	}
+	from := records[0].day.UTC().Truncate(24 * time.Hour)
+	to := from
+	for _, record := range records[1:] {
+		day := record.day.UTC().Truncate(24 * time.Hour)
+		if day.Before(from) {
+			from = day
+		}
+		if day.After(to) {
+			to = day
+		}
+	}
+	if !m.spendSince.IsZero() {
+		from = m.spendSince.UTC().Truncate(24 * time.Hour)
+		to = until.UTC().Truncate(24 * time.Hour)
+	}
+	byDay := map[string]spendGroup{}
+	for _, group := range groupRecordsByDay(records) {
+		byDay[group.name] = group
+	}
+	for day := from; !day.After(to); day = day.AddDate(0, 0, 1) {
+		group := byDay[day.Format("2006-01-02")]
+		aggregate := spendExportAggregate("", group.sessions, group.records)
+		report.Timeseries = append(report.Timeseries, exporter.SpendPoint{
+			PeriodStart: day,
+			PeriodEnd:   day.AddDate(0, 0, 1),
+			Sessions:    aggregate.Sessions,
+			Usage:       aggregate.Usage,
+			Cost:        aggregate.Cost,
+		})
+	}
+	return report
+}
+
+func spendExportAggregates(groups []spendGroup) []exporter.SpendAggregate {
+	out := make([]exporter.SpendAggregate, 0, len(groups))
+	for _, group := range groups {
+		out = append(out, spendExportAggregate(group.name, group.sessions, group.records))
+	}
+	return out
+}
+
+func spendExportAggregate(name string, sessions int, records []spendRecord) exporter.SpendAggregate {
+	u := core.SumUsage(recordUsage(records))
+	cost := spendRecordCost(records)
+	return exporter.SpendAggregate{
+		Name:     name,
+		Sessions: sessions,
+		Usage: exporter.SpendUsage{
+			Input: u.Input, CachedInput: u.CachedInput, CacheCreation: u.CacheCreation,
+			CacheCreation1h: u.CacheCreation1h, Output: u.Output, Reasoning: u.Reasoning,
+			Tool: u.Tool, Total: u.Total,
+		},
+		Cost: exporter.SpendCost{
+			ReportedUSD: cost.reported, APIRateUSD: cost.apiRate, TotalUSD: cost.total(),
+			HasUnpricedUsage: cost.unpriced,
+		},
+	}
+}
+
+func spendLineChart(title string, values []float64, days []time.Time, width int, formatY func(float64) string, lineStyle lipgloss.Style) string {
+	const height = 8
+	peak := 0.0
+	for _, value := range values {
+		peak = max(peak, value)
+	}
+	maxY := niceChartMax(peak, 3)
+	maxX := float64(max(1, len(values)-1))
+	chart := linechart.New(width, height, 0, maxX, 0, maxY,
+		linechart.WithXYSteps(max(1, (width-12)/2), 2),
+		linechart.WithStyles(muted, muted, lineStyle),
+		linechart.WithXLabelFormatter(func(_ int, _ float64) string { return "" }),
+		linechart.WithYLabelFormatter(func(_ int, value float64) string {
+			return formatY(value)
+		}),
+	)
+	chart.DrawXYAxisAndLabel()
+	drawTrendDateLabels(&chart, days)
+	origin := chart.Origin()
+	for row := 2; row < chart.GraphHeight(); row += 2 {
+		y := origin.Y - row
+		for x := origin.X + 1; x < width; x += 2 {
+			chart.Canvas.SetRuneWithStyle(canvas.Point{X: x, Y: y}, '·', muted)
+		}
+	}
+	points := make([]canvas.Float64Point, len(values))
+	for i, value := range values {
+		points[i] = canvas.Float64Point{X: float64(i), Y: value}
+	}
+	if len(points) == 1 {
+		chart.DrawRuneWithStyle(points[0], '●', lineStyle)
+	} else {
+		for i := 1; i < len(points); i++ {
+			chart.DrawBrailleLineWithStyle(points[i-1], points[i], lineStyle)
+		}
+		if len(points) <= 14 {
+			for _, point := range points {
+				chart.DrawRuneWithStyle(point, '●', lineStyle)
+			}
+		}
+	}
+	return "  " + titleStyle.Render(title) + "  " + muted.Render("peak "+formatY(peak)) + "\n" + chart.View() + "\n"
+}
+
+func niceChartMax(peak float64, intervals int) float64 {
+	if peak <= 0 || intervals <= 0 {
+		return 1
+	}
+	rawStep := peak / float64(intervals)
+	magnitude := math.Pow(10, math.Floor(math.Log10(rawStep)))
+	normalized := rawStep / magnitude
+	step := 10.0
+	for _, candidate := range []float64{1, 2, 2.5, 5, 10} {
+		if normalized <= candidate {
+			step = candidate
+			break
+		}
+	}
+	return step * magnitude * float64(intervals)
+}
+
+func drawTrendDateLabels(chart *linechart.Model, days []time.Time) {
+	if len(days) == 0 {
+		return
+	}
+	y := chart.Origin().Y + 1
+	left := days[0].Format("Jan 02")
+	chart.Canvas.SetStringWithStyle(canvas.Point{X: chart.Origin().X + 1, Y: y}, left, muted)
+	if len(days) == 1 || chart.Width() < 28 {
+		return
+	}
+	right := days[len(days)-1].Format("Jan 02")
+	rightX := chart.Width() - len(right)
+	chart.Canvas.SetStringWithStyle(canvas.Point{X: rightX, Y: y}, right, muted)
+	if chart.Width() < 48 {
+		return
+	}
+	middle := days[len(days)/2].Format("Jan 02")
+	middleX := chart.Origin().X + (chart.GraphWidth()-len(middle))/2
+	if middleX > chart.Origin().X+len(left)+2 && middleX+len(middle)+2 < rightX {
+		chart.Canvas.SetStringWithStyle(canvas.Point{X: middleX, Y: y}, middle, muted)
+	}
 }
 
 func (m Model) reportedCostNote() string {
