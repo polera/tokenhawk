@@ -44,6 +44,66 @@ func TestHawkBrandHasCompactAndFullArtwork(t *testing.T) {
 	}
 }
 
+func TestDashboardTabNavigationAndShortcutReference(t *testing.T) {
+	m := New(nil)
+	m.width, m.height = 100, 30
+	m.resize()
+	if got := strings.Join(dashboardTabs(m.width), "|"); got != "1 Live|2 History|3 Spend|4 Search" {
+		t.Fatalf("unexpected dashboard views: %s", got)
+	}
+
+	updated, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyTab})
+	m = updated.(Model)
+	if m.tab != 1 {
+		t.Fatalf("Tab opened view %d, want session history", m.tab)
+	}
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyTab, Mod: tea.ModShift})
+	m = updated.(Model)
+	if m.tab != 0 {
+		t.Fatalf("Shift+Tab opened view %d, want live sessions", m.tab)
+	}
+	m.navigateView(-1)
+	if m.tab != transcriptTab {
+		t.Fatalf("backward navigation opened view %d, want transcript search", m.tab)
+	}
+	m.transcriptInput = false
+	m.navigateView(1)
+	if m.tab != 0 {
+		t.Fatalf("forward navigation opened view %d, want live sessions", m.tab)
+	}
+
+	updated, _ = m.Update(tea.KeyPressMsg{Code: '?', Text: "?"})
+	m = updated.(Model)
+	if !m.help {
+		t.Fatal("? did not open the shortcut reference")
+	}
+	view := m.View().Content
+	for _, want := range []string{"KEYBOARD REFERENCE", "Tab / Shift+Tab", "Open a view directly", "Press any key to return"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("shortcut reference missing %q:\n%s", want, view)
+		}
+	}
+	updated, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	m = updated.(Model)
+	if m.help {
+		t.Fatal("shortcut reference did not close")
+	}
+}
+
+func TestDashboardChromeFitsCompactWidth(t *testing.T) {
+	for _, width := range []int{50, 65, 68, 80} {
+		m := New(nil)
+		m.width, m.height = width, 24
+		m.resize()
+		header, footer := m.chrome()
+		for _, line := range strings.Split(header+"\n"+footer, "\n") {
+			if got := lipgloss.Width(line); got > m.width {
+				t.Fatalf("chrome rendered a %d-cell line into %d cells: %q", got, m.width, line)
+			}
+		}
+	}
+}
+
 func TestResizeAcrossColumnLayoutsRebuildsRowShape(t *testing.T) {
 	m := New(nil)
 	m.sessions = []core.Session{{Provider: core.Codex, ID: "session", Project: "/work", Active: true, UpdatedAt: time.Now(), Usage: []core.Usage{{Model: "model", Input: 10, CachedInput: 3, Output: 2, Reasoning: 1, Total: 12}}}}
@@ -89,10 +149,57 @@ func TestSessionDetailBreaksOutSubagents(t *testing.T) {
 	m.resize()
 	m.detail = true
 	view := m.detailView()
-	for _, want := range []string{"SESSION TOTAL", "PARENT USAGE", "SUBAGENTS", "1 running / 2 total", "Plato", "child-one", "/root/review", "agent-model", "input:output 6.00:1", "$0.010000 estimated (priced)", "child-two"} {
+	for _, want := range []string{"SESSION TOTAL", "PARENT USAGE", "SUBAGENTS", "1 running / 2 total", "Plato", "child-one", "/root/review", "agent-model", "input:output 6.00:1", "$0.010000 API rate", "child-two"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("detail missing %q:\n%s", want, view)
 		}
+	}
+}
+
+func TestBackgroundRefreshFilterFreezesHistoricalSessionViews(t *testing.T) {
+	inactive := core.Session{Provider: core.Codex, ID: "inactive"}
+	active := core.Session{Provider: core.Codex, ID: "active", Active: true}
+	backgroundResult := sessionsMsg{background: true, sessions: []core.Session{active}}
+	initialResult := sessionsMsg{sessions: []core.Session{inactive}}
+
+	tests := []struct {
+		name  string
+		model Model
+		allow bool
+	}{
+		{name: "active list", model: Model{tab: 0}, allow: true},
+		{name: "inactive list", model: Model{tab: 1}, allow: false},
+		{name: "spend", model: Model{tab: spendTab}, allow: true},
+		{name: "transcript search", model: Model{tab: transcriptTab}, allow: false},
+		{name: "active detail", model: Model{tab: 0, detail: true, detailSession: &active}, allow: true},
+		{name: "inactive detail", model: Model{tab: 1, detail: true, detailSession: &inactive}, allow: false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			refreshAllowed := FilterRefresh(tc.model, RefreshMsg{}) != nil
+			resultAllowed := FilterRefresh(tc.model, backgroundResult) != nil
+			if refreshAllowed != tc.allow || resultAllowed != tc.allow {
+				t.Fatalf("refresh=%v result=%v, want both %v", refreshAllowed, resultAllowed, tc.allow)
+			}
+			if FilterRefresh(tc.model, initialResult) == nil {
+				t.Fatal("initial session load was filtered")
+			}
+		})
+	}
+}
+
+func TestInFlightRefreshResultDoesNotMutateInactiveView(t *testing.T) {
+	original := core.Session{Provider: core.Codex, ID: "original"}
+	m := New(nil)
+	m.tab = 1
+	m.sessions = []core.Session{original}
+	updated, _ := m.Update(sessionsMsg{
+		background: true,
+		sessions:   []core.Session{{Provider: core.Codex, ID: "replacement"}},
+	})
+	m = updated.(Model)
+	if len(m.sessions) != 1 || m.sessions[0].ID != original.ID {
+		t.Fatalf("in-flight refresh replaced inactive view: %#v", m.sessions)
 	}
 }
 
@@ -180,7 +287,7 @@ func TestResumeCommandsUseProviderSyntaxAndProjectDirectory(t *testing.T) {
 	}
 }
 
-func TestReportedCostLabelIsNotEstimated(t *testing.T) {
+func TestReportedCostLabelIsDistinctFromAPIRate(t *testing.T) {
 	got := costDetail(core.Usage{CostUSD: 1.25, PricingStatus: "reported"})
 	if got != "$1.250000 reported" {
 		t.Fatalf("reported cost was relabeled: %q", got)

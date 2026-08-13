@@ -221,7 +221,7 @@ func mustWrite(t *testing.T, path, data string) {
 
 // Claude Code writes one transcript line per content block, so a single billed
 // response repeats its usage verbatim across consecutive lines. Counting each
-// line roughly doubled every estimate.
+// line roughly doubled every API-rate cost.
 func TestClaudeRepeatedContentBlocksAreCountedOnce(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "session.jsonl")
 	line := `{"type":"assistant","sessionId":"c1","requestId":"req_1","timestamp":"2026-07-14T12:00:01Z","message":{"id":"msg_1","model":"claude-opus-4-8","usage":{"input_tokens":10,"cache_read_input_tokens":40,"cache_creation_input_tokens":10,"output_tokens":20}}}`

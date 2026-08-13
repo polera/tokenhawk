@@ -340,7 +340,7 @@ func openCodeUsage(db *sql.DB, sessionID string) ([]core.Usage, error) {
 		u.CostUSD += message.Cost
 		// OpenCode writes cost: 0 for models reached through subscription-backed
 		// credentials. A zero is not useful as a spend report, so leave the row
-		// unset and let the pricing catalog produce an API-equivalent estimate.
+		// unset and let the pricing catalog produce an API-rate cost.
 		// Preserve non-zero amounts because those are costs OpenCode actually
 		// calculated for the request.
 		if message.Cost != 0 {

@@ -224,7 +224,7 @@ func TestLongCacheWritesUseTheHourlyRate(t *testing.T) {
 // to its single cache rate instead of pricing hourly writes at zero.
 func TestRateWithoutHourlyCacheFallsBackToTheShortRate(t *testing.T) {
 	r := Rate{Provider: core.Claude, CacheCreation: 6.25}
-	got := r.Estimate(core.Usage{CacheCreation: 1_000_000, CacheCreation1h: 1_000_000})
+	got := r.Cost(core.Usage{CacheCreation: 1_000_000, CacheCreation1h: 1_000_000})
 	if math.Abs(got-6.25) > 1e-9 {
 		t.Fatalf("hourly writes were dropped: %f", got)
 	}

@@ -168,6 +168,12 @@ func TestRenderAlarmAndJSON(t *testing.T) {
 	if value["session_id"] != "g" || value["cache_alarm"] != true || value["cache_ratio"] != 0.5 {
 		t.Fatalf("unexpected JSON status: %s", encoded)
 	}
+	if _, ok := value["api_cost_usd"]; !ok {
+		t.Fatalf("JSON status omitted api_cost_usd: %s", encoded)
+	}
+	if _, old := value["estimated_cost_usd"]; old {
+		t.Fatalf("JSON status retained estimated_cost_usd: %s", encoded)
+	}
 }
 
 func TestWaitingSupportsTmux(t *testing.T) {

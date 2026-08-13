@@ -11,7 +11,7 @@ Hide
 Type "sh tools/vhs/.demo/run.sh"
 Enter
 Sleep 9s
-Type "4"
+Type "3"
 Sleep 1s
 Show
 Sleep 2s

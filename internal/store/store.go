@@ -82,7 +82,7 @@ CREATE INDEX IF NOT EXISTS reported_costs_day ON reported_costs(day);`)
 
 // EnsurePricingFingerprint invalidates the derived index when bundled or
 // override rates change. Unchanged source files must be reparsed to replace
-// their stored estimates, so this makes catalog upgrades self-healing.
+// their stored API-rate costs, so this makes catalog upgrades self-healing.
 func (s *Store) EnsurePricingFingerprint(fingerprint string) (bool, error) {
 	var current string
 	err := s.db.QueryRow(`SELECT value FROM metadata WHERE key='pricing_fingerprint'`).Scan(&current)

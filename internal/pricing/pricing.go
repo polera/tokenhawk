@@ -48,8 +48,8 @@ type Catalog struct {
 	rates       []Rate
 }
 
-// Estimate applies a rate to usage in API billing units.
-func (r Rate) Estimate(u core.Usage) float64 {
+// Cost applies the public API rate to usage in API billing units.
+func (r Rate) Cost(u core.Usage) float64 {
 	standardInput := u.Input - u.CachedInput
 	if standardInput < 0 {
 		standardInput = 0
@@ -113,7 +113,7 @@ func (c *Catalog) Version() string     { return c.version }
 func (c *Catalog) Fingerprint() string { return c.fingerprint }
 
 // Lookup returns the exact effective-dated catalog rate used to price a model.
-// Keeping this selection in one place lets reports explain an estimate without
+// Keeping this selection in one place lets reports explain an API-rate cost without
 // duplicating (and potentially drifting from) the pricing rules.
 func (c *Catalog) Lookup(provider core.Provider, at time.Time, model string) (Rate, bool) {
 	type candidate struct {
@@ -131,7 +131,7 @@ func (c *Catalog) Lookup(provider core.Provider, at time.Time, model string) (Ra
 	}
 	// OpenCode retains the upstream provider in model identifiers. Try an
 	// explicit OpenCode override first, then reuse the underlying provider's
-	// exact catalog rate for API-equivalent estimates when OpenCode did not
+	// exact catalog rate for API-equivalent costs when OpenCode did not
 	// report a non-zero cost.
 	if provider == core.OpenCode {
 		providerID, modelID, ok := strings.Cut(model, "/")
@@ -178,7 +178,7 @@ func (c *Catalog) Price(provider core.Provider, at time.Time, u core.Usage) core
 		u.PricingStatus = "unpriced"
 		return u
 	}
-	u.CostUSD = selected.Estimate(u)
+	u.CostUSD = selected.Cost(u)
 	u.PricingStatus = "priced"
 	return u
 }

@@ -32,7 +32,7 @@ func spendModel(t *testing.T) Model {
 	return m
 }
 
-func TestSpendModelShowsTokensAndEffectivePricingBehindEstimate(t *testing.T) {
+func TestSpendModelShowsTokensAndEffectiveAPIRatePricing(t *testing.T) {
 	m := spendModel(t)
 	m.tab = spendTab
 	m.rebuild()
@@ -48,12 +48,12 @@ func TestSpendModelShowsTokensAndEffectivePricingBehindEstimate(t *testing.T) {
 		"5.0k output × $10/M",
 	} {
 		if !strings.Contains(view, want) {
-			t.Fatalf("spend estimate missing %q:\n%s", want, view)
+			t.Fatalf("spend API-rate detail missing %q:\n%s", want, view)
 		}
 	}
 	// The synthetic haiku identifier is intentionally not in the exact-match
 	// catalog, so no guessed rate should be displayed for it.
-	if strings.Contains(view, "claude-haiku-4-5\n      estimate:") {
+	if strings.Contains(view, "claude-haiku-4-5\n      API rate:") {
 		t.Fatalf("unpriced model received a guessed breakdown:\n%s", view)
 	}
 }
@@ -118,7 +118,7 @@ func TestSpendWindowExcludesSessionsUpdatedBeforeSince(t *testing.T) {
 		t.Fatalf("40-day-old session leaked into the 7d window:\n%s", view)
 	}
 	// Totals must include subagent usage, matching Session.Totals.
-	for _, want := range []string{"SPEND · last 7 days", "TOTAL", "636.0k", "i:o 23.5:1", "$5.500000 estimated (priced)", "claude-haiku-4-5"} {
+	for _, want := range []string{"SPEND · last 7 days", "TOTAL", "636.0k", "i:o 23.5:1", "$5.500000 API rate", "claude-haiku-4-5"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("spend view missing %q:\n%s", want, view)
 		}
@@ -173,10 +173,10 @@ func TestSpendGroupsRankProvidersModelsAndDays(t *testing.T) {
 
 func TestSpendKeysCycleWindowsAndAcceptTypedDates(t *testing.T) {
 	m := spendModel(t)
-	updated, _ := m.Update(key("4"))
+	updated, _ := m.Update(key("3"))
 	m = updated.(Model)
 	if m.tab != spendTab {
-		t.Fatalf("4 did not open the spend view: tab=%d", m.tab)
+		t.Fatalf("3 did not open the spend view: tab=%d", m.tab)
 	}
 	updated, _ = m.Update(key("t"))
 	m = updated.(Model)
@@ -275,7 +275,7 @@ func key(s string) tea.KeyPressMsg {
 	return tea.KeyPressMsg{Code: rune(s[len(s)-1]), Mod: tea.ModCtrl}
 }
 
-// The two cache-write tiers bill differently, so an estimate that includes
+// The two cache-write tiers bill differently, so an API-rate cost that includes
 // hourly writes has to show both rates rather than one blended line.
 func TestSpendBreakdownSeparatesCacheWriteTiers(t *testing.T) {
 	prices, err := pricing.Load("")
@@ -299,12 +299,12 @@ func TestSpendBreakdownSeparatesCacheWriteTiers(t *testing.T) {
 		"$8.500000",
 	} {
 		if !strings.Contains(view, want) {
-			t.Fatalf("spend estimate missing %q:\n%s", want, view)
+			t.Fatalf("spend API-rate detail missing %q:\n%s", want, view)
 		}
 	}
 }
 
-func TestSpendUsesAnthropicReportedCostWithoutDoubleCountingClaudeEstimate(t *testing.T) {
+func TestSpendUsesAnthropicReportedCostWithoutDoubleCountingClaudeAPIRate(t *testing.T) {
 	m := spendModel(t)
 	day := time.Now().UTC()
 	day = time.Date(day.Year(), day.Month(), day.Day(), 0, 0, 0, 0, time.UTC)
@@ -317,7 +317,7 @@ func TestSpendUsesAnthropicReportedCostWithoutDoubleCountingClaudeEstimate(t *te
 	m.rebuild()
 	view := m.spendContent()
 	for _, want := range []string{
-		"$1.500000 reported + $1.000000 estimated",
+		"$1.500000 reported + $1.000000 API rate",
 		"Anthropic Admin API organization billing covers 1 UTC day(s)",
 		"reported: $1.250000  ·  Anthropic Admin Cost API",
 		"BY DAY (UTC)",
@@ -327,14 +327,14 @@ func TestSpendUsesAnthropicReportedCostWithoutDoubleCountingClaudeEstimate(t *te
 		}
 	}
 	if strings.Contains(view, "50.0k input × $5/M") {
-		t.Fatalf("replaced Claude estimate still displayed its rate calculation:\n%s", view)
+		t.Fatalf("replaced Claude API-rate cost still displayed its calculation:\n%s", view)
 	}
 
 	m.search = "work"
 	m.rebuild()
 	view = m.spendContent()
-	if !strings.Contains(view, "$5.500000 estimated (priced)") ||
+	if !strings.Contains(view, "$5.500000 API rate") ||
 		!strings.Contains(view, "billing is excluded while search is active") {
-		t.Fatalf("search did not fall back to attributable session estimates:\n%s", view)
+		t.Fatalf("search did not fall back to attributable session API-rate costs:\n%s", view)
 	}
 }

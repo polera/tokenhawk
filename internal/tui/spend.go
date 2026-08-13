@@ -11,8 +11,7 @@ import (
 	"github.com/polera/tokenhawk/internal/timerange"
 )
 
-const spendTab = 3
-const reconcileTab = 4
+const spendTab = 2
 const spendDayRows = 14
 
 // spendGroup is one aggregation bucket: a provider, a model, or a day.
@@ -24,21 +23,17 @@ type spendGroup struct {
 
 // spendRecord retains the provider and timestamp alongside a usage row. Those
 // fields are needed to identify the exact effective-dated rate behind an
-// estimate; a summed dollar amount alone cannot recover that provenance.
+// API-rate cost; a summed dollar amount alone cannot recover that provenance.
 type spendRecord struct {
-	provider           core.Provider
-	sessionID          string
-	at                 time.Time
-	day                time.Time
-	usage              core.Usage
-	estimatedCost      float64
-	reportedCost       float64
-	estimateSuppressed bool
-	costSource         string
-	// suppressedEstimate retains the list-price estimate that estimateSuppressed
-	// discarded. Reconciliation needs both sides of the comparison, and a zeroed
-	// estimatedCost cannot recover it.
-	suppressedEstimate float64
+	provider          core.Provider
+	sessionID         string
+	at                time.Time
+	day               time.Time
+	usage             core.Usage
+	apiRateCost       float64
+	reportedCost      float64
+	apiRateSuppressed bool
+	costSource        string
 }
 
 type spendGroups struct {
@@ -97,7 +92,7 @@ func newSessionSpendRecord(provider core.Provider, sessionID string, at, day tim
 	if usage.PricingStatus == "reported" {
 		record.reportedCost = usage.CostUSD
 	} else {
-		record.estimatedCost = usage.CostUSD
+		record.apiRateCost = usage.CostUSD
 	}
 	return record
 }
@@ -207,18 +202,18 @@ func (m Model) spendWindow() (time.Time, string) {
 }
 
 type spendCost struct {
-	reported  float64
-	estimated float64
-	unpriced  bool
+	reported float64
+	apiRate  float64
+	unpriced bool
 }
 
-func (c spendCost) total() float64 { return c.reported + c.estimated }
+func (c spendCost) total() float64 { return c.reported + c.apiRate }
 
 func spendRecordCost(records []spendRecord) spendCost {
 	var out spendCost
 	for _, record := range records {
 		out.reported += record.reportedCost
-		out.estimated += record.estimatedCost
+		out.apiRate += record.apiRateCost
 		if record.usage.PricingStatus != "priced" && record.usage.PricingStatus != "reported" && record.usage.Total > 0 {
 			out.unpriced = true
 		}
@@ -227,7 +222,7 @@ func spendRecordCost(records []spendRecord) spendCost {
 }
 
 // spendRecords combines local token-attribution rows with the Anthropic daily
-// billing ledger. Claude estimates are suppressed only on UTC days whose
+// billing ledger. Claude API-rate costs are suppressed only on UTC days whose
 // successful API fetch is recorded in reportedCostDays.
 func (m Model) spendRecords() []spendRecord {
 	records := sessionRecords(m.shown)
@@ -244,9 +239,8 @@ func (m Model) spendRecords() []spendRecord {
 		if records[i].provider != core.Claude || !covered[records[i].day.UTC().Format("2006-01-02")] {
 			continue
 		}
-		records[i].suppressedEstimate = records[i].estimatedCost
-		records[i].estimatedCost = 0
-		records[i].estimateSuppressed = true
+		records[i].apiRateCost = 0
+		records[i].apiRateSuppressed = true
 	}
 	for _, cost := range m.reportedCosts {
 		if cost.Provider != core.Claude || !m.reportedDayInWindow(cost.Day) {
@@ -317,7 +311,7 @@ func (m Model) reportedCostNote() string {
 		}
 	}
 	if coverage > 0 {
-		return fmt.Sprintf("Anthropic Admin API organization billing covers %d UTC day(s); overlapping Claude list-price estimates are excluded.", coverage)
+		return fmt.Sprintf("Anthropic Admin API organization billing covers %d UTC day(s); overlapping Claude API-rate costs are excluded.", coverage)
 	}
 	return ""
 }
@@ -404,7 +398,7 @@ func (m Model) modelPricingDetails(records []spendRecord) []string {
 	var order []string
 	groups := map[string]*spendRateGroup{}
 	for _, record := range records {
-		if record.usage.PricingStatus != "priced" || record.estimateSuppressed {
+		if record.usage.PricingStatus != "priced" || record.apiRateSuppressed {
 			continue
 		}
 		rate, ok := m.prices.Lookup(record.provider, record.at, record.usage.Model)
@@ -436,7 +430,7 @@ func (m Model) modelPricingDetails(records []spendRecord) []string {
 		}
 		long := min(u.CacheCreation1h, u.CacheCreation)
 		short := u.CacheCreation - long
-		out = append(out, fmt.Sprintf("estimate: %s input × %s/M  +  %s cached input × %s/M",
+		out = append(out, fmt.Sprintf("API rate: %s input × %s/M  +  %s cached input × %s/M",
 			human(input), dollarRate(group.rate.Input), human(u.CachedInput), dollarRate(group.rate.CachedInput)))
 		// The two cache-write tiers bill differently, so only collapse them into
 		// one term when nothing was written at the 1-hour rate.
@@ -451,7 +445,7 @@ func (m Model) modelPricingDetails(records []spendRecord) []string {
 		if cacheTerms != "" {
 			terms = fmt.Sprintf("          %s  +  %s %s × %s/M", cacheTerms, human(output), outputLabel, dollarRate(group.rate.Output))
 		}
-		summary := fmt.Sprintf("$%.6f  ·  %s rate effective %s", group.rate.Estimate(u), group.provider, group.rate.EffectiveFrom)
+		summary := fmt.Sprintf("$%.6f  ·  %s rate effective %s", group.rate.Cost(u), group.provider, group.rate.EffectiveFrom)
 		if m.width > 0 && m.width < 120 {
 			out = append(out, terms, "          =  "+summary)
 		} else {
@@ -490,14 +484,14 @@ func spendRecordWeight(records []spendRecord) float64 {
 
 func spendCostText(cost spendCost) string {
 	switch {
-	case cost.reported != 0 && cost.estimated != 0:
-		return fmt.Sprintf("$%.4f reported + $%.4f est", cost.reported, cost.estimated)
+	case cost.reported != 0 && cost.apiRate != 0:
+		return fmt.Sprintf("$%.4f reported + $%.4f API rate", cost.reported, cost.apiRate)
 	case cost.reported != 0:
 		return fmt.Sprintf("$%.4f reported", cost.reported)
-	case cost.estimated != 0 && cost.unpriced:
-		return fmt.Sprintf("$%.4f+ estimated", cost.estimated)
-	case cost.estimated != 0:
-		return fmt.Sprintf("$%.4f estimated", cost.estimated)
+	case cost.apiRate != 0 && cost.unpriced:
+		return fmt.Sprintf("$%.4f+ API rate", cost.apiRate)
+	case cost.apiRate != 0:
+		return fmt.Sprintf("$%.4f API rate", cost.apiRate)
 	case cost.unpriced:
 		return "unpriced"
 	default:
@@ -507,21 +501,21 @@ func spendCostText(cost spendCost) string {
 
 func spendCostDetail(cost spendCost) string {
 	switch {
-	case cost.reported != 0 && cost.estimated != 0:
+	case cost.reported != 0 && cost.apiRate != 0:
 		suffix := ""
 		if cost.unpriced {
 			suffix = " + unpriced usage"
 		}
-		return fmt.Sprintf("$%.6f reported + $%.6f estimated%s", cost.reported, cost.estimated, suffix)
+		return fmt.Sprintf("$%.6f reported + $%.6f API rate%s", cost.reported, cost.apiRate, suffix)
 	case cost.reported != 0:
 		if cost.unpriced {
 			return fmt.Sprintf("$%.6f reported + unpriced usage", cost.reported)
 		}
 		return fmt.Sprintf("$%.6f reported", cost.reported)
-	case cost.estimated != 0 && cost.unpriced:
-		return fmt.Sprintf("$%.6f+ estimated (partially priced)", cost.estimated)
-	case cost.estimated != 0:
-		return fmt.Sprintf("$%.6f estimated (priced)", cost.estimated)
+	case cost.apiRate != 0 && cost.unpriced:
+		return fmt.Sprintf("$%.6f+ API rate (partially priced)", cost.apiRate)
+	case cost.apiRate != 0:
+		return fmt.Sprintf("$%.6f API rate", cost.apiRate)
 	case cost.unpriced:
 		return "unpriced"
 	default:

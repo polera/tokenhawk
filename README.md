@@ -1,28 +1,28 @@
 # Tokenhawk
 
-Tokenhawk is a local, live token-usage monitor for Claude Code, Codex, Gemini CLI, Antigravity CLI (`agy`), Pi, and OpenCode. It indexes session metadata from the tools' normal home-directory stores and presents active sessions, history, per-model usage, spend since a chosen date, and cost estimates in a Bubble Tea terminal UI.
+Tokenhawk is a local, live token-usage monitor for Claude Code, Codex, Gemini CLI, Antigravity CLI (`agy`), Pi, and OpenCode. It indexes session metadata from the tools' normal home-directory stores and presents active sessions, history, per-model usage, spend since a chosen date, and API-rate costs in a Bubble Tea terminal UI.
 
-Tokenhawk never stores or exports prompts, responses, tool arguments, credentials, or transcript content.
+Tokenhawk never stores prompts, responses, tool arguments, credentials, or transcript content in its index or normal exports. The explicit transcript-search features read provider transcripts on demand and show only matching user/assistant text; they do not persist that text.
 
-The dashboard includes a responsive monochrome angular hawk-head wordmark that collapses to a single line in narrow terminals. Session rows include input, cached input, output, total, normalized input-to-output ratios, running/total subagents, and cost at medium and wide terminal sizes. Session detail breaks out Claude, Codex, and OpenCode subagents with their model, token categories, ratio, status, and cost.
+The dashboard uses a responsive control-center layout with persistent four-view navigation, live activity context, compact filters, and an adaptive command dock. Session rows include input, cached input, output, total, normalized input-to-output ratios, running/total subagents, and cost at medium and wide terminal sizes. Press `Tab` or `Shift+Tab` to move between views, use `1`–`4` to jump directly, and press `?` for the built-in keyboard reference. Session detail breaks out Claude, Codex, and OpenCode subagents with their model, token categories, ratio, status, and cost.
 
 Sessions with at least 100,000 input tokens and less than an 80% cached-input ratio are highlighted with a red warning in the dashboard. Detail identifies low-cache parent and subagent workloads separately.
 
 ## Screenshots
 
-The dashboard lists sessions across every provider with per-model usage, API-equivalent and reported cost, normalized input-to-output ratios, running subagent counts, and red high-input, low-cache warnings.
+The dashboard lists session history across every provider with per-model usage, API-rate and reported cost, normalized input-to-output ratios, running subagent counts, and red high-input, low-cache warnings.
 
-![Tokenhawk dashboard showing all sessions across Claude, Codex, Gemini, and Pi](assets/dashboard.png)
+![Tokenhawk dashboard showing session history across Claude, Codex, Gemini, and Pi](assets/dashboard.png)
 
 Selecting a session opens a detail view that breaks out parent and subagent usage per model, marks running versus inactive subagents, and includes a copy-ready resume command.
 
 ![Tokenhawk session detail with parent and subagent breakdown](assets/detail.png)
 
-Option 4 opens a reporting view with synthetic token usage and spend grouped by provider, model, and day.
+Option 3 opens a reporting view with synthetic token usage and spend grouped by provider, model, and day.
 
 ![Tokenhawk reporting view with token usage and spend breakdowns](assets/reporting.png)
 
-The layout is responsive: narrow terminals collapse the table columns and the hawk-head wordmark to fit.
+The layout is responsive: narrow terminals collapse the table columns, navigation, and context labels to fit.
 
 ![Tokenhawk in a narrow terminal](assets/compact.png)
 
@@ -33,13 +33,14 @@ _Screenshots use synthetic demo data._
 - Live, local monitoring of Claude Code, Codex, Gemini CLI, Antigravity CLI (`agy`), Pi, and OpenCode sessions
 - Compact per-session status output for shell, JSON, ANSI, and tmux integrations
 - Native Claude Code and Antigravity status-line integrations and tmux-backed wrappers for every supported client
-- Separate Active, Inactive Sessions, All Sessions, and Spend views
+- Separate Live, Session History, and Spend views
+- On-demand, local search across current and previous user/assistant messages
 - Spend totals and input-to-output ratios since any relative or absolute date, broken out by provider, model, and day
 - Per-session and per-model input, cached, output, reasoning, tool, and total tokens
 - Parent/subagent accounting with running-agent counts and detailed child usage
-- API-equivalent estimates and provider-reported costs with explicit status
+- Public API-rate costs and provider-reported costs with explicit status
 - High-input, low-cache warnings at a documented threshold
-- JSON and CSV export for the visible session set or one selected session
+- JSON and CSV export for the visible session set or one selected session; detail exports include the loaded conversation
 - Rebuildable SQLite index; provider transcript files remain untouched
 
 ## Install, build, and run
@@ -100,6 +101,26 @@ Run it in a dedicated terminal tab or window. By default Tokenhawk reads:
 - OpenCode: `${XDG_DATA_HOME:-~/.local/share}/opencode/opencode.db`
 
 The rebuildable SQLite index lives under the operating system's user cache directory. OpenCode's database is opened read-only, including live WAL data. Missing provider directories and databases are allowed.
+
+## Search session contents
+
+Search current and previous sessions with a case-insensitive literal query:
+
+```sh
+tokenhawk search "database migration"
+tokenhawk search --provider codex --project "$PWD" --since 30d "SQLite"
+tokenhawk search --role user --session SESSION_ID --format json "cache invalidation"
+```
+
+Search reads Claude, Codex (including archived sessions), Gemini, Pi, and OpenCode transcripts directly each time it runs. Results contain the provider, session, project, timestamp, role, and a short matching snippet, newest first. Use `--until`, `--limit`, or `--case-sensitive` to narrow the result set. Search flags must precede the query.
+
+Inside the interactive TUI, press `4` to open Transcript Search, type a query, and press Enter. Use the arrow or page keys to select a result, Enter to open its normal session detail view, `p` to search the next provider, `/` to edit the query, and `r` to refresh results from the provider stores.
+
+The numbered views remain available from every dashboard screen. `Tab` and `Shift+Tab` move forward and backward through Live, History, Spend, and Search; `?` opens the complete shortcut reference without leaving the current view.
+
+Every session detail view automatically loads and displays a chronological conversation from the raw transcript after its usage breakdown, containing user and assistant text while excluding tool traffic and reasoning. Use the arrow keys to move by line, Page Up/Page Down (or Left/Right) to move by page, `/` to find text, `n`/`N` to move between matches, `r` to reload, and Escape to return to the session list. Exporting from session details includes the complete loaded conversation with each message's role, timestamp, subagent ID, and text; bulk and headless exports remain metadata-only.
+
+Only user and assistant text is searched. Tool calls, tool results, reasoning blocks, structured credential fields, and other non-message payloads are excluded, and no transcript content is added to Tokenhawk's SQLite index. Search returns one review entry per matching session, represented by its newest hit. As with any transcript viewer, a matching secret that was pasted into a user or assistant message can appear in its snippet. Antigravity conversation bodies currently use an unsupported private protobuf format, so `agy` sessions are skipped silently during content search.
 
 ## Live metrics inside agent sessions
 
@@ -220,8 +241,9 @@ tokenhawk wrap opencode --session SESSION_ID
 
 | Key | Action |
 | --- | --- |
-| `1`, `2`, `3` | Active sessions, inactive sessions, all sessions |
-| `4` | Spend since a date |
+| `1`, `2` | Live sessions, session history |
+| `3` | Spend since a date |
+| `4` | Search current and previous transcript contents |
 | `i` | Toggle between active and inactive session lists |
 | `j`/`k`, arrows, page keys | Navigate |
 | `p` | Cycle provider filter |
@@ -230,19 +252,19 @@ tokenhawk wrap opencode --session SESSION_ID
 | `t` | Cycle the spend window (spend view) |
 | `d` | Type a spend window (spend view) |
 | `enter` | Session detail, including a provider-specific resume command |
-| `e` / `x` | Export the visible set as JSON / CSV |
+| `e` / `x` | Export the visible set as JSON / CSV; in details, export that session with its loaded conversation |
 | `q` | Quit |
 
 ## Spend since a date
 
-Press `4` for tokens and cost across a window instead of per session. The view totals input, cached input, output, and cost for the window, then breaks the same window out by provider, by model, and by day:
+Press `3` for tokens and cost across a window instead of per session. The view totals input, cached input, output, and cost for the window, then breaks the same window out by provider, by model, and by day:
 
 ```text
 SPEND · last 7 days
 2026-07-13 09:41 → now  •  23 of 25 sessions  •  counted by last session update
 
 TOTAL  tokens 17.30M  in 16.71M  cached 15.99M (96%)  out 238.3k  i:o 70.1:1
-       $20.184584 estimated (priced)
+       $20.184584 API rate
 
 BY PROVIDER
   codex  ████████████    12 sess  tokens 10.25M  in 10.14M  cached 9.42M  out 117.5k  i:o 86.3:1  $11.8310
@@ -250,12 +272,12 @@ BY PROVIDER
 
 BY MODEL
   gpt-5.6-sol ████████████  8 sess  tokens 8.20M  in 8.08M  cached 7.70M  out 90.0k  i:o 89.8:1  $8.4500
-      estimate: 380.0k input × $5/M  +  7.70M cached input × $0.5/M
+      API rate: 380.0k input × $5/M  +  7.70M cached input × $0.5/M
                 0 cache write × $6.25/M  +  90.0k output × $30/M
                 =  $8.450000  ·  codex rate effective 2026-06-26
 ```
 
-Estimated model rows show the uncached input, cached input, cache-write, and
+API-priced model rows show the uncached input, cached input, cache-write, and
 output quantities alongside the effective catalog rates used for each. If a
 window crosses a price change, Tokenhawk shows a separate rate breakdown for
 each effective period. Gemini reasoning tokens are included in its billed
@@ -301,11 +323,11 @@ anthropic_cost_lookback_days = 31
 include_source = false
 ```
 
-Equivalent CLI flags override the loaded values. Use `--rebuild` after changing source roots. Pricing catalog and override changes are fingerprinted and automatically trigger a one-time rebuild so stored estimates cannot remain stale.
+Equivalent CLI flags override the loaded values. Use `--rebuild` after changing source roots. Pricing catalog and override changes are fingerprinted and automatically trigger a one-time rebuild so stored API-rate costs cannot remain stale.
 
 ## Pricing
 
-Claude, Codex, Gemini, and recognized models used through AGY are explicitly estimates of public API list-price equivalents, not subscription charges, invoices, free-tier consumption, discounts, credits, or taxes. AGY model labels are normalized before exact lookup and use the underlying Gemini or Claude catalog rate. Unknown identifiers remain marked `unpriced` rather than inheriting a guessed family rate. Pi and nonzero costs recorded by OpenCode are labeled `reported` and preserved instead of being repriced. When OpenCode records zero cost for a recognized `openai`, `anthropic`, or `google` model, Tokenhawk shows the underlying model's public API list-price equivalent instead.
+Claude, Codex, Gemini, and recognized models used through AGY are priced from their exact recorded token counts at public API list rates. These API-rate costs do not represent subscription charges, invoices, free-tier consumption, discounts, credits, or taxes; subscription users can read them as the API value included with their plan. AGY model labels are normalized before exact lookup and use the underlying Gemini or Claude catalog rate. Unknown identifiers remain marked `unpriced` rather than inheriting a guessed family rate. Pi and nonzero costs recorded by OpenCode are labeled `reported` and preserved instead of being repriced. When OpenCode records zero cost for a recognized `openai`, `anthropic`, or `google` model, Tokenhawk applies the underlying model's public API list rate instead.
 
 ### Anthropic-reported spend
 
@@ -328,8 +350,8 @@ The key is read only from the environment and is never written to Tokenhawk's
 configuration or index.
 
 The Spend view uses these rows as reported cost for covered UTC days and removes
-the overlapping Claude list-price estimate, while keeping local session tokens
-and estimates for other providers. It displays reported and estimated dollars
+the overlapping Claude API-rate cost, while keeping local session tokens
+and API-rate costs for other providers. It displays reported and API-rate dollars
 separately when both occur in a window. Anthropic's report has no local session
 or project ID, so reported costs are not assigned to individual sessions and
 are excluded while a Spend search is active. Daily cost buckets are UTC even
@@ -339,7 +361,7 @@ The Admin API is unavailable to individual accounts. For Pro and Max
 subscriptions, model use is included in the subscription and there is no
 authoritative per-model billed spend to import. Priority Tier charges and usage
 routed through Bedrock, Vertex, Foundry, or Claude Platform on AWS are also not
-reported by this endpoint; those remain estimates unless their billing provider
+reported by this endpoint; those remain API-rate costs unless their billing provider
 is integrated separately.
 
 Session detail includes a copy-ready resume command. Tokenhawk changes to the recorded project directory first because resume behavior can be project-sensitive.

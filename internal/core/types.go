@@ -27,7 +27,7 @@ type Usage struct {
 	Reasoning       int64   `json:"reasoning_tokens"`
 	Tool            int64   `json:"tool_tokens"`
 	Total           int64   `json:"total_tokens"`
-	CostUSD         float64 `json:"estimated_cost_usd"`
+	CostUSD         float64 `json:"api_cost_usd"`
 	PricingStatus   string  `json:"pricing_status"`
 }
 

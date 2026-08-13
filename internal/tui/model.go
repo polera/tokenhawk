@@ -15,6 +15,7 @@ import (
 	exporter "github.com/polera/tokenhawk/internal/export"
 	"github.com/polera/tokenhawk/internal/monitor"
 	"github.com/polera/tokenhawk/internal/pricing"
+	"github.com/polera/tokenhawk/internal/sessionsearch"
 	"github.com/polera/tokenhawk/internal/timerange"
 )
 
@@ -24,10 +25,12 @@ type sessionsMsg struct {
 	reported     []core.ReportedCost
 	reportedDays []time.Time
 	err          error
+	background   bool
 }
 type exportMsg struct {
-	path string
-	err  error
+	path   string
+	err    error
+	detail bool
 }
 
 type Model struct {
@@ -41,7 +44,19 @@ type Model struct {
 	provider                     core.Provider
 	search                       string
 	searching, detail            bool
+	detailSession                *core.Session
 	detailOffset                 int
+	detailSearch                 string
+	detailSearchDraft            string
+	detailSearching              bool
+	detailSearchMatch            int
+	detailNotice                 string
+	detailPrompts                sessionsearch.Report
+	detailPromptsLoading         bool
+	detailPromptsError           string
+	detailPromptProvider         core.Provider
+	detailPromptSessionID        string
+	detailPromptRequest          int
 	notice                       string
 	layout                       int
 	spendSpec                    string
@@ -49,12 +64,16 @@ type Model struct {
 	spendOffset                  int
 	sinceInput                   bool
 	sinceDraft                   string
+	transcriptQuery              string
+	transcriptDraft              string
+	transcriptInput              bool
+	transcriptLoading            bool
+	transcriptReport             sessionsearch.Report
+	transcriptOffset             int
+	transcriptCursor             int
+	transcriptRequest            int
+	help                         bool
 }
-
-var titleStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#05A9C7"))
-var muted = lipgloss.NewStyle().Foreground(lipgloss.Color("#888888"))
-var good = lipgloss.NewStyle().Foreground(lipgloss.Color("#65d46e"))
-var alarmStyle = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#ff5f56"))
 
 const (
 	highInputAlarmTokens int64   = 100_000
@@ -65,7 +84,7 @@ const (
 )
 
 func New(mon *monitor.Monitor, catalogs ...*pricing.Catalog) Model {
-	t := table.New(table.WithFocused(true), table.WithHeight(15))
+	t := table.New(table.WithFocused(true), table.WithHeight(15), table.WithStyles(tableTheme(true)))
 	m := Model{monitor: mon, table: t}
 	if len(catalogs) > 0 {
 		m.prices = catalogs[0]
@@ -97,16 +116,51 @@ func (m *Model) setSpendSpec(spec string) error {
 	m.spendOffset = 0
 	return nil
 }
-func (m Model) Init() tea.Cmd { return tea.Batch(m.load(), tea.RequestBackgroundColor) }
-func (m Model) load() tea.Cmd {
+func (m Model) Init() tea.Cmd { return tea.Batch(m.load(false), tea.RequestBackgroundColor) }
+func (m Model) load(background bool) tea.Cmd {
 	return func() tea.Msg {
 		s, e := m.monitor.Sessions(context.Background(), core.Filter{})
 		if e != nil {
-			return sessionsMsg{err: e}
+			return sessionsMsg{err: e, background: background}
 		}
 		reported, days, e := m.monitor.ReportedCosts(context.Background())
-		return sessionsMsg{sessions: s, reported: reported, reportedDays: days, err: e}
+		return sessionsMsg{sessions: s, reported: reported, reportedDays: days, err: e, background: background}
 	}
+}
+
+// FilterRefresh prevents monitor-driven messages from reaching Bubble Tea
+// while a historical session view is visible. Returning nil here matters: an
+// ignored message in Update would still cause Bubble Tea to call View again.
+func FilterRefresh(model tea.Model, msg tea.Msg) tea.Msg {
+	var m Model
+	switch current := model.(type) {
+	case Model:
+		m = current
+	case *Model:
+		m = *current
+	default:
+		return msg
+	}
+	switch message := msg.(type) {
+	case RefreshMsg:
+		if !m.backgroundRefreshEnabled() {
+			return nil
+		}
+	case sessionsMsg:
+		if message.background && !m.backgroundRefreshEnabled() {
+			return nil
+		}
+	}
+	return msg
+}
+
+func (m Model) backgroundRefreshEnabled() bool {
+	if m.detail {
+		session, ok := m.selectedSession()
+		return ok && session.Active
+	}
+	// Inactive sessions and on-demand transcript results are historical views.
+	return m.tab != 1 && m.tab != transcriptTab
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -117,17 +171,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.resize()
 		return m, nil
 	case tea.BackgroundColorMsg:
-		styles := table.DefaultStyles()
-		if x.IsDark() {
-			styles.Selected = styles.Selected.Foreground(lipgloss.Color("#05A9C7"))
-		} else {
-			styles.Selected = styles.Selected.Foreground(lipgloss.Color("#046b80"))
-		}
-		m.table.SetStyles(styles)
+		m.table.SetStyles(tableTheme(x.IsDark()))
 		return m, nil
 	case RefreshMsg:
-		return m, m.load()
+		if !m.backgroundRefreshEnabled() {
+			return m, nil
+		}
+		return m, m.load(true)
 	case sessionsMsg:
+		if x.background && !m.backgroundRefreshEnabled() {
+			return m, nil
+		}
 		if x.err != nil {
 			m.notice = x.err.Error()
 		} else {
@@ -137,57 +191,101 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.rebuild()
 		}
 		return m, nil
+	case transcriptSearchMsg:
+		m.applyTranscriptSearch(x)
+		return m, nil
+	case detailPromptsMsg:
+		m.applyDetailPrompts(x)
+		return m, nil
 	case exportMsg:
+		status := "exported " + x.path
 		if x.err != nil {
-			m.notice = "export failed: " + x.err.Error()
+			status = "export failed: " + x.err.Error()
+		}
+		if x.detail && m.detail {
+			m.detailNotice = status
 		} else {
-			m.notice = "exported " + x.path
+			m.notice = status
 		}
 		return m, nil
 	case tea.KeyPressMsg:
 		if m.sinceInput {
 			return m.updateSinceInput(x)
 		}
+		if m.transcriptInput {
+			return m.updateTranscriptInput(x)
+		}
+		if m.detailSearching {
+			return m.updateDetailSearch(x)
+		}
 		if m.searching {
 			return m.updateSearch(x)
+		}
+		if m.help {
+			if x.String() == "ctrl+c" {
+				return m, tea.Quit
+			}
+			m.help = false
+			return m, nil
+		}
+		if x.String() == "?" {
+			m.help = true
+			return m, nil
+		}
+		if m.tab == transcriptTab && !m.detail {
+			return m.updateTranscript(x)
 		}
 		if m.textTab() && !m.detail {
 			return m.updateSpend(x)
 		}
 		if m.detail {
 			if x.String() == "e" || x.String() == "x" {
-				idx := m.tableCursorSession()
-				if idx >= 0 && idx < len(m.shown) {
+				if selected, ok := m.selectedSession(); ok {
 					format := "json"
 					if x.String() == "x" {
 						format = "csv"
 					}
-					return m, m.exportSessions(format, []core.Session{m.shown[idx]})
+					m.detailNotice = "exporting " + strings.ToUpper(format) + "…"
+					return m, m.exportDetail(format, selected)
 				}
 			}
 			switch x.String() {
+			case "/":
+				m.detailSearching = true
+				m.detailSearchDraft = m.detailSearch
+			case "r":
+				if selected, ok := m.selectedSession(); ok {
+					return m, m.startDetailPrompts(selected)
+				}
+			case "n":
+				m.moveDetailSearch(1)
+			case "N":
+				m.moveDetailSearch(-1)
 			case "j", "down":
 				m.scrollDetail(1)
 			case "k", "up":
 				m.scrollDetail(-1)
-			case "pgdown", "ctrl+f":
-				m.scrollDetail(max(1, m.height-4))
-			case "pgup", "ctrl+b":
-				m.scrollDetail(-max(1, m.height-4))
+			case "pgdown", "ctrl+f", "space", "right", "l":
+				m.scrollDetail(m.detailViewport())
+			case "pgup", "ctrl+b", "left", "h":
+				m.scrollDetail(-m.detailViewport())
 			case "g", "home":
-				m.detailOffset = 0
+				m.setDetailScrollOffset(0)
 			case "G", "end":
-				m.detailOffset = m.detailMaxOffset()
+				m.setDetailScrollOffset(m.detailMaxOffset())
 			}
 			if x.String() == "esc" || x.String() == "enter" || x.String() == "q" {
-				m.detail = false
-				m.detailOffset = 0
+				m.closeDetail()
 			}
 			return m, nil
 		}
 		switch x.String() {
 		case "q", "ctrl+c":
 			return m, tea.Quit
+		case "tab", "right", "l", "]":
+			m.navigateView(1)
+		case "shift+tab", "left", "h", "[":
+			m.navigateView(-1)
 		case "1":
 			m.tab = 0
 			m.rebuild()
@@ -195,16 +293,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.tab = 1
 			m.rebuild()
 		case "3":
-			m.tab = 2
-			m.rebuild()
-		case "4":
 			m.tab = spendTab
 			m.spendOffset = 0
 			m.rebuild()
-		case "5":
-			m.tab = reconcileTab
-			m.spendOffset = 0
-			m.rebuild()
+		case "4":
+			m.openTranscriptSearch()
 		case "i":
 			m.toggleActiveInactive()
 		case "p":
@@ -218,8 +311,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.notice = "type to filter projects/models; enter applies, esc cancels"
 		case "enter":
 			if len(m.table.SelectedRow()) > 0 {
+				m.detailSession = nil
 				m.detail = true
 				m.detailOffset = 0
+				m.detailNotice = ""
+				if selected, ok := m.selectedSession(); ok {
+					return m, m.startDetailPrompts(selected)
+				}
 			}
 		case "e":
 			return m, m.export("json")
@@ -238,18 +336,20 @@ func (m Model) updateSpend(k tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch k.String() {
 	case "q", "ctrl+c":
 		return m, tea.Quit
-	case "1", "2", "3":
+	case "tab", "right", "l", "]":
+		m.navigateView(1)
+	case "shift+tab", "left", "h", "[":
+		m.navigateView(-1)
+	case "1", "2":
 		m.tab = int(k.String()[0] - '1')
 		m.spendOffset = 0
 		m.rebuild()
-	case "4":
+	case "3":
 		m.tab = spendTab
 		m.spendOffset = 0
 		m.rebuild()
-	case "5":
-		m.tab = reconcileTab
-		m.spendOffset = 0
-		m.rebuild()
+	case "4":
+		m.openTranscriptSearch()
 	case "i":
 		m.tab = 0
 		m.spendOffset = 0
@@ -421,7 +521,7 @@ func (m *Model) rebuild() {
 		if m.provider != "" && s.Provider != m.provider {
 			continue
 		}
-		if m.textTab() {
+		if m.tab == spendTab {
 			if !m.spendSince.IsZero() && s.UpdatedAt.Before(m.spendSince) {
 				continue
 			}
@@ -446,6 +546,7 @@ func (m *Model) rebuild() {
 	for _, s := range m.shown {
 		u := s.Totals()
 		label, agents := sessionLabel(s), agentCount(s)
+		provider := providerLabel(s.Provider)
 		input, cached, output := human(u.Input), human(u.CachedInput), human(u.Output)
 		io, total, cost := ratioText(u.Input, u.Output), human(u.Total), costText(u)
 		if cacheAlarm(u) {
@@ -462,11 +563,11 @@ func (m *Model) rebuild() {
 			if cacheAlarm(u) {
 				breakdown = alarmStyle.Render(human(u.Input) + "/" + human(u.Output) + " " + ratioText(u.Input, u.Output))
 			}
-			rows = append(rows, table.Row{string(s.Provider), label, agents, breakdown, total})
+			rows = append(rows, table.Row{provider, label, agents, breakdown, total})
 		case 1:
-			rows = append(rows, table.Row{string(s.Provider), label, agents, input, cached, output, io, total, cost, relative(s.UpdatedAt)})
+			rows = append(rows, table.Row{provider, label, agents, input, cached, output, io, total, cost, relative(s.UpdatedAt)})
 		default:
-			rows = append(rows, table.Row{string(s.Provider), label, agents, modelNames(s), input, cached, output, io, human(u.Reasoning), total, cost, relative(s.UpdatedAt)})
+			rows = append(rows, table.Row{provider, label, agents, modelNames(s), input, cached, output, io, human(u.Reasoning), total, cost, relative(s.UpdatedAt)})
 		}
 	}
 	m.table.SetRows(rows)
@@ -506,13 +607,58 @@ func (m Model) exportSessions(format string, sessions []core.Session) tea.Cmd {
 		name := fmt.Sprintf("tokenhawk-%s.%s", time.Now().Format("20060102-150405"), format)
 		path, _ := filepath.Abs(name)
 		err := exporter.Write(path, format, sessions)
-		return exportMsg{path, err}
+		return exportMsg{path: path, err: err}
 	}
+}
+
+func (m Model) exportDetail(format string, session core.Session) tea.Cmd {
+	conversation, loaded := m.detailExportConversation(session)
+	mon := m.monitor
+	return func() tea.Msg {
+		name := fmt.Sprintf("tokenhawk-%s.%s", time.Now().Format("20060102-150405"), format)
+		path, _ := filepath.Abs(name)
+		if !loaded {
+			if mon == nil {
+				return exportMsg{path: path, err: fmt.Errorf("conversation is unavailable"), detail: true}
+			}
+			report, err := mon.Conversation(context.Background(), session.Provider, session.ID)
+			if err != nil {
+				return exportMsg{path: path, err: fmt.Errorf("load conversation: %w", err), detail: true}
+			}
+			if len(report.Unsupported) > 0 {
+				return exportMsg{path: path, err: fmt.Errorf("conversation is unavailable for %s", report.Unsupported[0]), detail: true}
+			}
+			conversation = exportConversation(report.Matches)
+		}
+		err := exporter.WriteDetail(path, format, session, conversation)
+		return exportMsg{path: path, err: err, detail: true}
+	}
+}
+
+func (m Model) detailExportConversation(session core.Session) ([]exporter.Message, bool) {
+	loaded := m.detailPromptProvider == session.Provider && m.detailPromptSessionID == session.ID &&
+		!m.detailPromptsLoading && m.detailPromptsError == "" && len(m.detailPrompts.Unsupported) == 0
+	if !loaded {
+		return nil, false
+	}
+	return exportConversation(m.detailPrompts.Matches), true
+}
+
+func exportConversation(messages []sessionsearch.Match) []exporter.Message {
+	var conversation []exporter.Message
+	for _, message := range messages {
+		conversation = append(conversation, exporter.Message{
+			Timestamp: message.Timestamp, SubagentID: message.SubagentID, Role: message.Role, Text: message.Snippet,
+		})
+	}
+	return conversation
 }
 
 func (m Model) View() tea.View {
 	var body string
-	if m.detail {
+	if m.help {
+		body = m.helpView()
+	} else if m.detail {
 		body = m.detailView()
 	} else {
 		body = m.dashboard()
@@ -526,7 +672,9 @@ func (m Model) View() tea.View {
 func (m Model) dashboard() string {
 	header, footer := m.chrome()
 	body := m.table.View()
-	if m.textTab() {
+	if m.tab == transcriptTab {
+		body = m.transcriptBody()
+	} else if m.textTab() {
 		body = m.spendBody()
 	}
 	return header + "\n\n" + body + "\n" + footer
@@ -535,53 +683,7 @@ func (m Model) dashboard() string {
 // chrome renders the parts that frame every dashboard body, so the spend view
 // and the session table agree on how many rows are left for content.
 func (m Model) chrome() (string, string) {
-	active := 0
-	runningAgents := 0
-	for _, s := range m.sessions {
-		if s.Active {
-			active++
-		}
-		runningAgents += s.RunningSubagents()
-	}
-	cacheAlarms := activeCacheAlarms(m.sessions)
-	tabs := []string{"1 Active", "2 Inactive Sessions", "3 All Sessions", "4 Spend", "5 Reconcile"}
-	tabs[m.tab] = titleStyle.Render(tabs[m.tab])
-	provider := "all"
-	if m.provider != "" {
-		provider = string(m.provider)
-	}
-	sortName := []string{"updated", "tokens", "cost"}[m.sortMode]
-	header := hawkBrand(m.width) + "\n" + strings.Join(tabs, "  ") + "\n" + fmt.Sprintf("%s active  •  %d inactive  •  %s subagents running  •  showing %d of %d sessions\nprovider: %s  •  sort: %s  •  spend window: %s", good.Render(fmt.Sprint(active)), len(m.sessions)-active, good.Render(fmt.Sprint(runningAgents)), len(m.shown), len(m.sessions), provider, sortName, timerange.Label(m.spendSpec))
-	if cacheAlarms > 0 {
-		header += "\n" + alarmStyle.Render(fmt.Sprintf("⚠ %d high-input session(s) below 80%% cache ratio", cacheAlarms))
-	}
-	if m.sinceInput {
-		header += "\nsince " + m.sinceDraft + "▌"
-	} else if m.searching || m.search != "" {
-		header += "\n/ " + m.search + "▌"
-	}
-	var status monitor.Status
-	if m.monitor != nil {
-		status = m.monitor.Status()
-	}
-	keys := "i active/inactive  p provider  s sort  / filter  enter details  e JSON  x CSV  q quit"
-	if m.textTab() {
-		keys = "t range  d since  1-3 sessions  4 spend  5 reconcile  p provider  ↑/↓ scroll  e JSON  x CSV  q quit"
-	}
-	footer := fmt.Sprintf("%s  •  indexed %d files", keys, status.Files)
-	if status.Scanning {
-		footer += " • scanning…"
-	}
-	if status.Warning != "" {
-		footer += " • warning: " + status.Warning
-	}
-	if status.CostWarning != "" {
-		footer += " • warning: " + status.CostWarning
-	}
-	if m.notice != "" {
-		footer += "\n" + m.notice
-	}
-	return header, muted.Render(footer)
+	return m.dashboardChrome()
 }
 
 func (m Model) chromeHeight() int {
@@ -590,17 +692,15 @@ func (m Model) chromeHeight() int {
 }
 
 // textTab reports whether the active tab renders a scrolling text report
-// rather than the session table. Those tabs share the spend window, the scroll
-// offset, and updateSpend's key handling.
-func (m Model) textTab() bool { return m.tab == spendTab || m.tab == reconcileTab }
+// rather than the session table.
+func (m Model) textTab() bool {
+	return m.tab == spendTab || m.tab == transcriptTab
+}
 
 // spendBody renders the active text report clipped to the available rows, with
 // the same scroll affordance the session detail uses.
 func (m Model) spendBody() string {
 	content := m.spendContent()
-	if m.tab == reconcileTab {
-		content = m.reconcileContent()
-	}
 	lines := strings.Split(content, "\n")
 	visible := m.spendViewport()
 	if m.height <= 0 || len(lines) <= visible {
@@ -612,25 +712,64 @@ func (m Model) spendBody() string {
 }
 func (m Model) detailView() string {
 	content := m.detailContent()
-	lines := strings.Split(content, "\n")
-	visible := max(1, m.height-2)
-	if m.height <= 0 || len(lines) <= visible {
-		return content + "\n" + muted.Render("e JSON  x CSV  Enter/Esc back")
+	keys := "↑/↓ line  PgUp/PgDn page  / find  r reload  e JSON  x CSV  Enter/Esc back"
+	if m.detailSearching {
+		keys = "/ " + m.detailSearchDraft + titleStyle.Render("▌") + "  Enter find  Esc cancel"
+	} else if m.detailSearch != "" {
+		current, total := m.detailSearchPosition()
+		if total == 0 {
+			keys = fmt.Sprintf("/ %s  ·  no matches  ·  / edit  r reload  Enter/Esc back", m.detailSearch)
+		} else {
+			keys = fmt.Sprintf("/ %s  ·  match %d/%d  ·  n/N next/prev  / edit  Enter/Esc back", m.detailSearch, current, total)
+		}
 	}
-	offset := min(max(0, m.detailOffset), max(0, len(lines)-visible))
+	footer := m.detailFooter(keys)
+	lines := strings.Split(content, "\n")
+	visible := m.detailViewport()
+	if m.height <= 0 || len(lines) <= visible {
+		return content + "\n" + footer
+	}
+	offset := min(max(0, m.detailScrollOffset()), m.detailMaxOffset())
 	end := min(len(lines), offset+visible)
-	footer := fmt.Sprintf("↑/↓ scroll  %d–%d/%d  •  e JSON  x CSV  Enter/Esc back", offset+1, end, len(lines))
-	return strings.Join(lines[offset:end], "\n") + "\n" + muted.Render(footer)
+	page := offset/visible + 1
+	pages := max(1, (len(lines)+visible-1)/visible)
+	if offset == m.detailMaxOffset() {
+		page = pages
+	}
+	pageStatus := fmt.Sprintf("page %d/%d  •  lines %d–%d/%d  •  %s", page, pages, offset+1, end, len(lines), keys)
+	footer = m.detailFooter(pageStatus)
+	return strings.Join(lines[offset:end], "\n") + "\n" + footer
+}
+
+func (m Model) detailFooter(keys string) string {
+	footer := muted.Render(keys)
+	if m.detailNotice == "" {
+		return footer
+	}
+	statusStyle := good
+	if strings.HasPrefix(m.detailNotice, "export failed:") {
+		statusStyle = alarmStyle
+	}
+	return footer + "\n" + statusStyle.Render(m.detailNoticeText())
+}
+
+func (m Model) detailNoticeText() string {
+	width := 80
+	if m.width > 0 {
+		width = max(1, m.width)
+	}
+	return wrapPromptText(m.detailNotice, width)
 }
 
 func (m Model) detailContent() string {
-	idx := m.tableCursorSession()
-	if idx < 0 || idx >= len(m.shown) {
+	s, ok := m.selectedSession()
+	if !ok {
 		return "No session selected"
 	}
-	s := m.shown[idx]
 	var b strings.Builder
-	b.WriteString(titleStyle.Render("SESSION "+s.ID) + "\n\n")
+	b.WriteString(muted.Render(strings.ToUpper(string(s.Provider))+"  /  SESSION DETAIL") + "\n")
+	status := statusStyle(s.Active).Render(map[bool]string{true: "● ACTIVE", false: "○ HISTORY"}[s.Active])
+	b.WriteString(titleStyle.Render("SESSION "+s.ID) + "  " + status + "\n\n")
 	fmt.Fprintf(&b, "Provider: %s\nProject: %s\nStarted: %s\nUpdated: %s (%s)\nStatus: %s\nSource: %s\nResume: %s\n\n", s.Provider, s.Project, s.StartedAt.Format(time.RFC3339), s.UpdatedAt.Format(time.RFC3339), relative(s.UpdatedAt), map[bool]string{true: "active", false: "inactive"}[s.Active], s.SourceHealth, resumeCommand(s))
 	total := s.Totals()
 	direct := s.DirectTotals()
@@ -672,16 +811,56 @@ func (m Model) detailContent() string {
 		}
 		b.WriteString("\n")
 	}
+	b.WriteString(m.detailPromptContent(s))
 	return b.String()
 }
 func (m *Model) scrollDetail(delta int) {
-	m.detailOffset = min(max(0, m.detailOffset+delta), m.detailMaxOffset())
+	m.setDetailScrollOffset(min(max(0, m.detailScrollOffset()+delta), m.detailMaxOffset()))
+}
+
+func (m Model) detailScrollOffset() int {
+	return m.detailOffset
+}
+
+func (m *Model) setDetailScrollOffset(offset int) {
+	m.detailOffset = offset
 }
 func (m Model) detailMaxOffset() int {
-	return max(0, len(strings.Split(m.detailContent(), "\n"))-max(1, m.height-2))
+	lines := len(strings.Split(m.detailContent(), "\n"))
+	visible := m.detailViewport()
+	if lines <= visible {
+		return 0
+	}
+	// Bottom-align the final viewport. Rounding this to a page boundary leaves a
+	// short last page (and its footer) stranded in the middle of the terminal.
+	return lines - visible
+}
+
+func (m Model) detailViewport() int {
+	statusRows := 0
+	if m.detailNotice != "" {
+		statusRows = len(strings.Split(m.detailNoticeText(), "\n"))
+	}
+	return max(1, m.height-2-statusRows)
 }
 func (m Model) tableCursorSession() int {
 	return m.table.Cursor()
+}
+
+func (m Model) selectedSession() (core.Session, bool) {
+	if m.detailSession != nil {
+		for _, session := range m.sessions {
+			if session.Provider == m.detailSession.Provider && session.ID == m.detailSession.ID {
+				return session, true
+			}
+		}
+		return *m.detailSession, true
+	}
+	idx := m.tableCursorSession()
+	if idx < 0 || idx >= len(m.shown) {
+		return core.Session{}, false
+	}
+	return m.shown[idx], true
 }
 func modelNames(s core.Session) string {
 	seen := map[string]bool{}
@@ -759,9 +938,9 @@ func sessionLabel(s core.Session) string {
 }
 func hawkBrand(width int) string {
 	if width < 60 {
-		return titleStyle.Render("TOKENHAWK")
+		return brandStyle.Render("TOKENHAWK")
 	}
-	return titleStyle.Render("TOKENHAWK") + "\n" + muted.Render("session token monitor")
+	return brandStyle.Render("TOKENHAWK") + "\n" + muted.Render("session token monitor")
 }
 func shortProject(p string) string {
 	if p == "" {
@@ -816,9 +995,9 @@ func costDetail(u core.Usage) string {
 	case "reported":
 		return fmt.Sprintf("$%.6f reported", u.CostUSD)
 	case "priced":
-		return fmt.Sprintf("$%.6f estimated (priced)", u.CostUSD)
+		return fmt.Sprintf("$%.6f API rate", u.CostUSD)
 	case "partially priced":
-		return fmt.Sprintf("$%.6f+ estimated (partially priced)", u.CostUSD)
+		return fmt.Sprintf("$%.6f+ API rate (partially priced)", u.CostUSD)
 	default:
 		return "unpriced"
 	}

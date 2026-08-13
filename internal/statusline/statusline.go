@@ -279,7 +279,7 @@ func renderJSON(session core.Session) (string, error) {
 		CacheRatio       float64       `json:"cache_ratio"`
 		Output           int64         `json:"output_tokens"`
 		InputOutputRatio string        `json:"input_output_ratio"`
-		CostUSD          float64       `json:"estimated_cost_usd"`
+		CostUSD          float64       `json:"api_cost_usd"`
 		PricingStatus    string        `json:"pricing_status"`
 		RunningSubagents int           `json:"running_subagents"`
 		TotalSubagents   int           `json:"total_subagents"`

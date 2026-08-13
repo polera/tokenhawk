@@ -14,6 +14,7 @@ import (
 	"github.com/polera/tokenhawk/internal/core"
 	"github.com/polera/tokenhawk/internal/pricing"
 	"github.com/polera/tokenhawk/internal/providers"
+	"github.com/polera/tokenhawk/internal/sessionsearch"
 	"github.com/polera/tokenhawk/internal/store"
 )
 
@@ -253,6 +254,18 @@ func (m *Monitor) warn(v string) { m.mu.Lock(); m.status.Warning = v; m.mu.Unloc
 
 func (m *Monitor) Sessions(ctx context.Context, f core.Filter) ([]core.Session, error) {
 	return m.store.List(ctx, f, m.cfg.ActiveWindow, m.cfg.IncludeSource)
+}
+
+// Search reads provider transcripts on demand without adding their contents to
+// the persistent usage index.
+func (m *Monitor) Search(ctx context.Context, query sessionsearch.Query) (sessionsearch.Report, error) {
+	return sessionsearch.Search(ctx, m.cfg, query)
+}
+
+// Conversation reads one session's user and assistant messages in
+// chronological order without adding transcript text to the index.
+func (m *Monitor) Conversation(ctx context.Context, provider core.Provider, sessionID string) (sessionsearch.Report, error) {
+	return sessionsearch.Conversation(ctx, m.cfg, provider, sessionID)
 }
 
 func (m *Monitor) ReportedCosts(ctx context.Context) ([]core.ReportedCost, []time.Time, error) {
