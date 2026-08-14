@@ -485,3 +485,75 @@ func TestSpendUsesAnthropicReportedCostWithoutDoubleCountingClaudeAPIRate(t *tes
 		t.Fatalf("search did not fall back to attributable session API-rate costs:\n%s", view)
 	}
 }
+
+func TestSpendUsesDailyLedgerToSplitSessionsAcrossDays(t *testing.T) {
+	m := spendModel(t)
+	m.tab = spendTab
+	now := time.Now()
+	utc := func(daysAgo int) time.Time {
+		y, mo, d := now.UTC().AddDate(0, 0, -daysAgo).Date()
+		return time.Date(y, mo, d, 0, 0, 0, 0, time.UTC)
+	}
+	// today-a grew on two separate days; the other sessions have no ledger
+	// rows and must keep whole-session attribution.
+	m.usageDays = []core.DayUsage{
+		{Provider: core.Claude, SessionID: "today-a", Day: utc(1),
+			Usage: core.Usage{Model: "claude-opus-4-8", Input: 300_000, Total: 300_000, CostUSD: 2.5, PricingStatus: "priced"}},
+		{Provider: core.Claude, SessionID: "today-a", Day: utc(0),
+			Usage: core.Usage{Model: "claude-opus-4-8", Input: 200_000, CachedInput: 450_000, Output: 20_000, Total: 220_000, CostUSD: 1.5, PricingStatus: "priced"}},
+		{Provider: core.Claude, SessionID: "today-a", Day: utc(0),
+			Usage: core.Usage{Model: "claude-haiku-4-5", Input: 10_000, CachedInput: 5_000, Output: 1_000, Total: 11_000, CostUSD: 0.5, PricingStatus: "priced"}},
+	}
+	m.rebuild()
+	records := m.spendRecords()
+
+	perDay := map[string]int64{}
+	for _, record := range records {
+		if record.sessionID == "today-a" {
+			perDay[record.day.UTC().Format("2006-01-02")] += record.usage.Total
+		}
+	}
+	if perDay[utc(1).Format("2006-01-02")] != 300_000 || perDay[utc(0).Format("2006-01-02")] != 231_000 {
+		t.Fatalf("ledger days not attributed separately: %#v", perDay)
+	}
+
+	// Sessions without ledger rows keep last-update attribution.
+	var fallbackTotal int64
+	for _, record := range records {
+		if record.sessionID == "recent-b" {
+			fallbackTotal += record.usage.Total
+		}
+	}
+	if fallbackTotal != 105_000 {
+		t.Fatalf("fallback session usage lost: %d", fallbackTotal)
+	}
+}
+
+func TestSpendExcludesLedgerDaysBeforeWindow(t *testing.T) {
+	m := spendModel(t)
+	m.tab = spendTab
+	now := time.Now()
+	utc := func(daysAgo int) time.Time {
+		y, mo, d := now.UTC().AddDate(0, 0, -daysAgo).Date()
+		return time.Date(y, mo, d, 0, 0, 0, 0, time.UTC)
+	}
+	m.usageDays = []core.DayUsage{
+		{Provider: core.Claude, SessionID: "today-a", Day: utc(10),
+			Usage: core.Usage{Model: "claude-opus-4-8", Input: 999_000, Total: 999_000, CostUSD: 9.9, PricingStatus: "priced"}},
+		{Provider: core.Claude, SessionID: "today-a", Day: utc(0),
+			Usage: core.Usage{Model: "claude-opus-4-8", Input: 1_000, Total: 1_000, CostUSD: 0.1, PricingStatus: "priced"}},
+	}
+	if err := m.setSpendSpec("7d"); err != nil {
+		t.Fatal(err)
+	}
+	m.rebuild()
+	var total int64
+	for _, record := range m.spendRecords() {
+		if record.sessionID == "today-a" {
+			total += record.usage.Total
+		}
+	}
+	if total != 1_000 {
+		t.Fatalf("usage outside the window leaked in: %d", total)
+	}
+}

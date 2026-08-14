@@ -50,12 +50,20 @@ claude = [
     ("billing-service", "claude-opus-4-8", 22_000, 878_000, 36_000, 40_300, 9800, []),
     ("ml-training", "claude-sonnet-5", 9200, 425_000, 19_000, 2_400, 11000, []),
 ]
+claude_prompts = {
+    "data-pipeline": "Is migration 00107_backfill_events ready to run?",
+    "search-index": "Investigate migration 00318_rebuild_terms",
+}
 for project, model, inp, cread, ccreate, out, age, subs in claude:
     cwd = f"/home/dev/src/{project}"
     sid = uid("claude" + project)
     base = os.path.join(FIX, "claude", project.replace("-", "_"))
+    user_record = {"type": "user", "sessionId": sid, "cwd": cwd,
+                   "timestamp": ts(age + 30)}
+    if project in claude_prompts:
+        user_record["message"] = {"role": "user", "content": claude_prompts[project]}
     recs = [
-        {"type": "user", "sessionId": sid, "cwd": cwd, "timestamp": ts(age + 30)},
+        user_record,
         {"type": "assistant", "sessionId": sid, "cwd": cwd, "timestamp": ts(age),
          "message": {"model": model, "usage": {
              "input_tokens": inp, "cache_read_input_tokens": cread,
@@ -81,11 +89,15 @@ codex = [
     ("search-index", "gpt-5.3-codex", 14_963_800, 14_330_000, 76_200, 16_900, 15_040_000, 2900),
     ("infra-terraform", "gpt-5.6-sol", 5_991_600, 5_720_000, 28_400, 9_200, 6_020_000, 8600),
 ]
+codex_prompts = {
+    "acme-api": "Validate migration 00063_add_audit_log in staging",
+    "infra-terraform": "Plan migration 00204_rename_state_bucket",
+}
 for project, model, inp, cached, out, reason, total, age in codex:
     cwd = f"/home/dev/src/{project}"
     sid = uid("codex" + project)
     path = os.path.join(FIX, "codex", "sessions", "2026", "07", "15", sid + ".jsonl")
-    write_jsonl(path, [
+    records = [
         {"type": "session_meta", "timestamp": ts(age + 20),
          "payload": {"id": sid, "cwd": cwd, "timestamp": ts(age + 20)}},
         {"type": "turn_context", "payload": {"model": model, "cwd": cwd}},
@@ -93,7 +105,12 @@ for project, model, inp, cached, out, reason, total, age in codex:
          "info": {"total_token_usage": {
              "input_tokens": inp, "cached_input_tokens": cached, "output_tokens": out,
              "reasoning_output_tokens": reason, "total_tokens": total}}}},
-    ], age)
+    ]
+    if project in codex_prompts:
+        records.insert(2, {"type": "event_msg", "timestamp": ts(age + 10),
+                          "payload": {"type": "user_message",
+                                      "message": codex_prompts[project]}})
+    write_jsonl(path, records, age)
 
 # ---- Pi sessions (reported cost) ------------------------------------------
 # fields: project, provider, model, input, output, cacheRead, cacheWrite, total, cost, age
@@ -102,6 +119,9 @@ pi = [
     ("payments-core", "openai", "codex/gpt-5.3", 2, 2, 0, 0, 2_200, 0.0137, 4300),
     ("checkout-flow", "anthropic", "claude-sonnet-4-5", 2_300, 1_100, 2_200, 900, 9_300, 0.0665, 8500),
 ]
+pi_messages = {
+    "acme-web": "Migration 00081_refresh_checkout_view is ready for review",
+}
 for project, prov, model, inp, out, cread, cwrite, total, cost, age in pi:
     cwd = f"/home/dev/src/{project}"
     sid = uid("pi" + project)
@@ -109,7 +129,8 @@ for project, prov, model, inp, out, cread, cwrite, total, cost, age in pi:
     write_jsonl(path, [
         {"type": "session", "id": sid, "cwd": cwd, "timestamp": ts(age + 15)},
         {"type": "message", "timestamp": ts(age), "message": {
-            "role": "assistant", "provider": prov, "model": model, "usage": {
+            "role": "assistant", "provider": prov, "model": model,
+            "content": pi_messages.get(project, ""), "usage": {
                 "input": inp, "output": out, "cacheRead": cread, "cacheWrite": cwrite,
                 "totalTokens": total, "cost": {"total": cost}}}},
     ], age)
@@ -124,7 +145,9 @@ with open(os.path.join(gdir, ".project_root"), "w") as f:
     f.write(cwd)
 with open(os.path.join(gdir, "chats", "session-1.json"), "w") as f:
     json.dump({"sessionId": sid, "startTime": ts(5850), "lastUpdated": ts(5800),
-               "messages": [{"model": "gemini-3-pro-preview", "tokens": {
+               "messages": [{"type": "user", "timestamp": ts(5820),
+                   "content": "Check migration 00126_rebuild_dashboard_cache"},
+                   {"model": "gemini-3-pro-preview", "tokens": {
                    "Input": 148_000, "Cached": 92_000, "Output": 6_800,
                    "Thoughts": 3_400, "Tool": 1_200, "Total": 159_400}}]}, f)
 backdate(os.path.join(gdir, "chats", "session-1.json"), 5800)

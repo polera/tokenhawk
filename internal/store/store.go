@@ -36,23 +36,32 @@ func Open(path string) (*Store, error) {
 
 func (s *Store) Close() error { return s.db.Close() }
 func (s *Store) init() error {
-	_, err := s.db.Exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;
+	// The daily usage ledger arrived after early indexes were written. Its
+	// absence in an existing database means every stored session predates
+	// delta tracking, so those sources must be reparsed from scratch.
+	hadUsageDays, err := s.tableExists("usage_days")
+	if err != nil {
+		return err
+	}
+	_, err = s.db.Exec(`PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;
 CREATE TABLE IF NOT EXISTS sources(path TEXT PRIMARY KEY,provider TEXT NOT NULL,session_id TEXT NOT NULL,size INTEGER NOT NULL,mtime_ns INTEGER NOT NULL,offset INTEGER NOT NULL,parser_state TEXT NOT NULL DEFAULT '',kind TEXT NOT NULL DEFAULT 'session',parent_session_id TEXT NOT NULL DEFAULT '',agent_name TEXT NOT NULL DEFAULT '',agent_path TEXT NOT NULL DEFAULT '');
 CREATE TABLE IF NOT EXISTS sessions(provider TEXT NOT NULL,id TEXT NOT NULL,project TEXT NOT NULL DEFAULT '',started_at INTEGER NOT NULL,updated_at INTEGER NOT NULL,source_health TEXT NOT NULL DEFAULT 'ok',PRIMARY KEY(provider,id));
 CREATE TABLE IF NOT EXISTS usage(provider TEXT NOT NULL,session_id TEXT NOT NULL,model TEXT NOT NULL,input INTEGER NOT NULL,cached_input INTEGER NOT NULL,cache_creation INTEGER NOT NULL,cache_creation_1h INTEGER NOT NULL DEFAULT 0,output INTEGER NOT NULL,reasoning INTEGER NOT NULL,tool INTEGER NOT NULL,total INTEGER NOT NULL,cost_usd REAL NOT NULL,pricing_status TEXT NOT NULL,PRIMARY KEY(provider,session_id,model));
+CREATE TABLE IF NOT EXISTS usage_days(provider TEXT NOT NULL,session_id TEXT NOT NULL,model TEXT NOT NULL,day INTEGER NOT NULL,input INTEGER NOT NULL,cached_input INTEGER NOT NULL,cache_creation INTEGER NOT NULL,cache_creation_1h INTEGER NOT NULL DEFAULT 0,output INTEGER NOT NULL,reasoning INTEGER NOT NULL,tool INTEGER NOT NULL,total INTEGER NOT NULL,cost_usd REAL NOT NULL,pricing_status TEXT NOT NULL,PRIMARY KEY(provider,session_id,model,day));
 CREATE TABLE IF NOT EXISTS subagents(provider TEXT NOT NULL,parent_session_id TEXT NOT NULL,id TEXT NOT NULL,name TEXT NOT NULL DEFAULT '',agent_path TEXT NOT NULL DEFAULT '',started_at INTEGER NOT NULL,updated_at INTEGER NOT NULL,status TEXT NOT NULL DEFAULT 'unknown',source_health TEXT NOT NULL DEFAULT 'ok',PRIMARY KEY(provider,parent_session_id,id));
 CREATE TABLE IF NOT EXISTS subagent_usage(provider TEXT NOT NULL,parent_session_id TEXT NOT NULL,subagent_id TEXT NOT NULL,model TEXT NOT NULL,input INTEGER NOT NULL,cached_input INTEGER NOT NULL,cache_creation INTEGER NOT NULL,cache_creation_1h INTEGER NOT NULL DEFAULT 0,output INTEGER NOT NULL,reasoning INTEGER NOT NULL,tool INTEGER NOT NULL,total INTEGER NOT NULL,cost_usd REAL NOT NULL,pricing_status TEXT NOT NULL,PRIMARY KEY(provider,parent_session_id,subagent_id,model));
 CREATE TABLE IF NOT EXISTS reported_cost_days(provider TEXT NOT NULL,day INTEGER NOT NULL,source TEXT NOT NULL,fetched_at INTEGER NOT NULL,PRIMARY KEY(provider,day,source));
 CREATE TABLE IF NOT EXISTS reported_costs(provider TEXT NOT NULL,day INTEGER NOT NULL,model TEXT NOT NULL DEFAULT '',amount_nano_usd INTEGER NOT NULL,source TEXT NOT NULL,PRIMARY KEY(provider,day,model,source));
 CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY,value TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS sessions_updated ON sessions(updated_at DESC);
+CREATE INDEX IF NOT EXISTS usage_days_day ON usage_days(day);
 CREATE INDEX IF NOT EXISTS reported_costs_day ON reported_costs(day);`)
 	if err != nil {
 		return err
 	}
 	// Existing databases predate subagent source metadata. SQLite has no
 	// ADD COLUMN IF NOT EXISTS, so inspect first and migrate in place.
-	migrated := false
+	migrated := !hadUsageDays
 	for name, definition := range map[string]string{
 		"kind": "TEXT NOT NULL DEFAULT 'session'", "parent_session_id": "TEXT NOT NULL DEFAULT ''",
 		"agent_name": "TEXT NOT NULL DEFAULT ''", "agent_path": "TEXT NOT NULL DEFAULT ''",
@@ -103,6 +112,12 @@ func (s *Store) EnsurePricingFingerprint(fingerprint string) (bool, error) {
 	}
 	_, err = s.db.Exec(`INSERT INTO metadata(key,value) VALUES('pricing_fingerprint',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value`, fingerprint)
 	return sources > 0, err
+}
+
+func (s *Store) tableExists(name string) (bool, error) {
+	var count int
+	err := s.db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name=?`, name).Scan(&count)
+	return count > 0, err
 }
 
 func (s *Store) ensureSourceColumn(name, definition string) (bool, error) {
@@ -167,7 +182,11 @@ func (s *Store) Apply(ctx context.Context, parsed core.Parsed, stat os.FileInfo)
 	if id == "" {
 		return fmt.Errorf("empty session id for %s", parsed.Session.SourcePath)
 	}
+	var previous map[string]core.Usage
 	if parsed.Replace {
+		if previous, err = readUsageMap(ctx, tx, `SELECT model,input,cached_input,cache_creation,cache_creation_1h,output,reasoning,tool,total,cost_usd,pricing_status FROM usage WHERE provider=? AND session_id=?`, p, id); err != nil {
+			return err
+		}
 		if _, err = tx.ExecContext(ctx, `DELETE FROM usage WHERE provider=? AND session_id=?`, p, id); err != nil {
 			return err
 		}
@@ -188,6 +207,9 @@ ON CONFLICT(provider,id) DO UPDATE SET project=CASE WHEN excluded.project<>'' TH
 			return err
 		}
 	}
+	if err = applyUsageDays(ctx, tx, p, id, parsed.Session.UpdatedAt, parsed.Session.Usage, previous, parsed.Replace); err != nil {
+		return err
+	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO sources(path,provider,session_id,size,mtime_ns,offset,parser_state,kind,parent_session_id,agent_name,agent_path) VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(path) DO UPDATE SET provider=excluded.provider,session_id=excluded.session_id,size=excluded.size,mtime_ns=excluded.mtime_ns,offset=excluded.offset,parser_state=excluded.parser_state,kind=excluded.kind,parent_session_id=excluded.parent_session_id,agent_name=excluded.agent_name,agent_path=excluded.agent_path`, parsed.SourcePath, p, id, stat.Size(), stat.ModTime().UnixNano(), parsed.Offset, parsed.ParserState, "session", "", "", "")
 	if err != nil {
 		return err
@@ -201,12 +223,17 @@ func (s *Store) applySubagent(ctx context.Context, tx *sql.Tx, parsed core.Parse
 	if id == "" || parentID == "" {
 		return fmt.Errorf("empty subagent or parent id for %s", parsed.SourcePath)
 	}
+	var previous map[string]core.Usage
+	var err error
 	if parsed.Replace {
-		if _, err := tx.ExecContext(ctx, `DELETE FROM subagent_usage WHERE provider=? AND parent_session_id=? AND subagent_id=?`, p, parentID, id); err != nil {
+		if previous, err = readUsageMap(ctx, tx, `SELECT model,input,cached_input,cache_creation,cache_creation_1h,output,reasoning,tool,total,cost_usd,pricing_status FROM subagent_usage WHERE provider=? AND parent_session_id=? AND subagent_id=?`, p, parentID, id); err != nil {
+			return err
+		}
+		if _, err = tx.ExecContext(ctx, `DELETE FROM subagent_usage WHERE provider=? AND parent_session_id=? AND subagent_id=?`, p, parentID, id); err != nil {
 			return err
 		}
 	}
-	_, err := tx.ExecContext(ctx, `INSERT INTO subagents(provider,parent_session_id,id,name,agent_path,started_at,updated_at,status,source_health) VALUES(?,?,?,?,?,?,?,?,?)
+	_, err = tx.ExecContext(ctx, `INSERT INTO subagents(provider,parent_session_id,id,name,agent_path,started_at,updated_at,status,source_health) VALUES(?,?,?,?,?,?,?,?,?)
 ON CONFLICT(provider,parent_session_id,id) DO UPDATE SET name=CASE WHEN excluded.name<>'' THEN excluded.name ELSE subagents.name END,agent_path=CASE WHEN excluded.agent_path<>'' THEN excluded.agent_path ELSE subagents.agent_path END,started_at=CASE WHEN subagents.started_at=0 OR (excluded.started_at>0 AND excluded.started_at<subagents.started_at) THEN excluded.started_at ELSE subagents.started_at END,updated_at=MAX(subagents.updated_at,excluded.updated_at),status=CASE WHEN excluded.status<>'unknown' THEN excluded.status ELSE subagents.status END,source_health=excluded.source_health`, p, parentID, id, a.Name, a.AgentPath, a.StartedAt.UnixNano(), a.UpdatedAt.UnixNano(), a.Status, a.SourceHealth)
 	if err != nil {
 		return err
@@ -221,11 +248,135 @@ ON CONFLICT(provider,parent_session_id,id) DO UPDATE SET name=CASE WHEN excluded
 			return err
 		}
 	}
+	// Subagent growth is folded into the parent session's daily ledger, the
+	// same aggregation the spend view uses for a session's total usage.
+	if err = applyUsageDays(ctx, tx, p, parentID, a.UpdatedAt, a.Usage, previous, parsed.Replace); err != nil {
+		return err
+	}
 	_, err = tx.ExecContext(ctx, `INSERT INTO sources(path,provider,session_id,size,mtime_ns,offset,parser_state,kind,parent_session_id,agent_name,agent_path) VALUES(?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(path) DO UPDATE SET provider=excluded.provider,session_id=excluded.session_id,size=excluded.size,mtime_ns=excluded.mtime_ns,offset=excluded.offset,parser_state=excluded.parser_state,kind=excluded.kind,parent_session_id=excluded.parent_session_id,agent_name=excluded.agent_name,agent_path=excluded.agent_path`, parsed.SourcePath, p, id, stat.Size(), stat.ModTime().UnixNano(), parsed.Offset, parsed.ParserState, "subagent", parentID, a.Name, a.AgentPath)
 	if err != nil {
 		return err
 	}
 	return tx.Commit()
+}
+
+// readUsageMap loads existing cumulative usage rows so a Replace-mode apply
+// can turn the new snapshot into per-model growth deltas.
+func readUsageMap(ctx context.Context, tx *sql.Tx, query string, args ...any) (map[string]core.Usage, error) {
+	rows, err := tx.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]core.Usage{}
+	for rows.Next() {
+		var u core.Usage
+		if err = rows.Scan(&u.Model, &u.Input, &u.CachedInput, &u.CacheCreation, &u.CacheCreation1h, &u.Output, &u.Reasoning, &u.Tool, &u.Total, &u.CostUSD, &u.PricingStatus); err != nil {
+			return nil, err
+		}
+		out[u.Model] = u
+	}
+	return out, rows.Err()
+}
+
+// applyUsageDays records usage growth in the daily ledger. Incremental
+// applies already carry deltas; Replace-mode applies carry cumulative
+// snapshots, so the previously stored rows are subtracted first. Deltas land
+// on the UTC day of the parsed update timestamp: for live sessions that is
+// the day the usage happened, while history indexed in a single pass lands on
+// the session's last-update day, matching whole-session attribution.
+func applyUsageDays(ctx context.Context, tx *sql.Tx, provider, sessionID string, updated time.Time, usage []core.Usage, previous map[string]core.Usage, replace bool) error {
+	deltas := usage
+	if replace {
+		deltas = usageDeltas(usage, previous)
+	}
+	day := usageDayUnix(updated)
+	for _, u := range deltas {
+		if usageIsZero(u) {
+			continue
+		}
+		_, err := tx.ExecContext(ctx, `INSERT INTO usage_days(provider,session_id,model,day,input,cached_input,cache_creation,cache_creation_1h,output,reasoning,tool,total,cost_usd,pricing_status) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(provider,session_id,model,day) DO UPDATE SET input=input+excluded.input,cached_input=cached_input+excluded.cached_input,cache_creation=cache_creation+excluded.cache_creation,cache_creation_1h=cache_creation_1h+excluded.cache_creation_1h,output=output+excluded.output,reasoning=reasoning+excluded.reasoning,tool=tool+excluded.tool,total=total+excluded.total,cost_usd=cost_usd+excluded.cost_usd,pricing_status=CASE WHEN usage_days.pricing_status='reported' AND excluded.pricing_status='reported' THEN 'reported' WHEN usage_days.pricing_status IN ('priced','reported') AND excluded.pricing_status IN ('priced','reported') THEN 'priced' ELSE 'unpriced' END`, provider, sessionID, u.Model, day, u.Input, u.CachedInput, u.CacheCreation, u.CacheCreation1h, u.Output, u.Reasoning, u.Tool, u.Total, u.CostUSD, u.PricingStatus)
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// usageDeltas subtracts previously stored cumulative rows from a new
+// snapshot. Deltas are deliberately not clamped at zero: a snapshot that
+// shrinks (or drops a model) yields negative growth, which keeps the ledger's
+// per-session sums equal to the current cumulative totals.
+func usageDeltas(current []core.Usage, previous map[string]core.Usage) []core.Usage {
+	seen := map[string]bool{}
+	out := make([]core.Usage, 0, len(current))
+	for _, u := range current {
+		out = append(out, subtractUsage(u, previous[u.Model]))
+		seen[u.Model] = true
+	}
+	for model, prev := range previous {
+		if !seen[model] {
+			out = append(out, subtractUsage(core.Usage{Model: model, PricingStatus: prev.PricingStatus}, prev))
+		}
+	}
+	return out
+}
+
+func subtractUsage(u, prev core.Usage) core.Usage {
+	u.Input -= prev.Input
+	u.CachedInput -= prev.CachedInput
+	u.CacheCreation -= prev.CacheCreation
+	u.CacheCreation1h -= prev.CacheCreation1h
+	u.Output -= prev.Output
+	u.Reasoning -= prev.Reasoning
+	u.Tool -= prev.Tool
+	u.Total -= prev.Total
+	u.CostUSD -= prev.CostUSD
+	return u
+}
+
+func usageIsZero(u core.Usage) bool {
+	return u.Input == 0 && u.CachedInput == 0 && u.CacheCreation == 0 && u.CacheCreation1h == 0 &&
+		u.Output == 0 && u.Reasoning == 0 && u.Tool == 0 && u.Total == 0 && u.CostUSD == 0
+}
+
+// usageDayUnix buckets an update instant into its UTC day, falling back to
+// the current day for sources that carry no usable timestamp.
+func usageDayUnix(updated time.Time) int64 {
+	if updated.IsZero() || updated.Unix() <= 0 {
+		updated = time.Now()
+	}
+	return utcDay(updated).Unix()
+}
+
+// UsageDays returns the daily usage ledger oldest-day first, optionally
+// bounded to days at or after since.
+func (s *Store) UsageDays(ctx context.Context, since time.Time) ([]core.DayUsage, error) {
+	query := `SELECT provider,session_id,model,day,input,cached_input,cache_creation,cache_creation_1h,output,reasoning,tool,total,cost_usd,pricing_status FROM usage_days`
+	args := []any{}
+	if !since.IsZero() {
+		query += ` WHERE day>=?`
+		args = append(args, utcDay(since).Unix())
+	}
+	query += ` ORDER BY day,provider,session_id,model`
+	rows, err := s.db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []core.DayUsage
+	for rows.Next() {
+		var row core.DayUsage
+		var provider string
+		var day int64
+		if err = rows.Scan(&provider, &row.SessionID, &row.Usage.Model, &day, &row.Usage.Input, &row.Usage.CachedInput, &row.Usage.CacheCreation, &row.Usage.CacheCreation1h, &row.Usage.Output, &row.Usage.Reasoning, &row.Usage.Tool, &row.Usage.Total, &row.Usage.CostUSD, &row.Usage.PricingStatus); err != nil {
+			return nil, err
+		}
+		row.Provider = core.Provider(provider)
+		row.Day = time.Unix(day, 0).UTC()
+		out = append(out, row)
+	}
+	return out, rows.Err()
 }
 
 func (s *Store) List(ctx context.Context, f core.Filter, activeWindow time.Duration, includeSource bool) ([]core.Session, error) {
@@ -479,13 +630,14 @@ func (s *Store) reconcile(ctx context.Context, paths []string, provider core.Pro
 DELETE FROM subagent_usage WHERE NOT EXISTS(SELECT 1 FROM subagents WHERE subagents.provider=subagent_usage.provider AND subagents.parent_session_id=subagent_usage.parent_session_id AND subagents.id=subagent_usage.subagent_id);
 DELETE FROM sessions WHERE NOT EXISTS(SELECT 1 FROM sources WHERE sources.kind='session' AND sources.provider=sessions.provider AND sources.session_id=sessions.id);
 DELETE FROM usage WHERE NOT EXISTS(SELECT 1 FROM sessions WHERE sessions.provider=usage.provider AND sessions.id=usage.session_id);
+DELETE FROM usage_days WHERE NOT EXISTS(SELECT 1 FROM sessions WHERE sessions.provider=usage_days.provider AND sessions.id=usage_days.session_id);
 DELETE FROM subagents WHERE NOT EXISTS(SELECT 1 FROM sessions WHERE sessions.provider=subagents.provider AND sessions.id=subagents.parent_session_id);
 DELETE FROM subagent_usage WHERE NOT EXISTS(SELECT 1 FROM subagents WHERE subagents.provider=subagent_usage.provider AND subagents.parent_session_id=subagent_usage.parent_session_id AND subagents.id=subagent_usage.subagent_id)`)
 	return err
 }
 
 func (s *Store) Reset() error {
-	_, err := s.db.Exec(`DELETE FROM sources;DELETE FROM subagent_usage;DELETE FROM subagents;DELETE FROM usage;DELETE FROM sessions;`)
+	_, err := s.db.Exec(`DELETE FROM sources;DELETE FROM subagent_usage;DELETE FROM subagents;DELETE FROM usage;DELETE FROM usage_days;DELETE FROM sessions;`)
 	return err
 }
 func SortByCost(sessions []core.Session) {

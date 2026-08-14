@@ -24,6 +24,7 @@ type sessionsMsg struct {
 	sessions     []core.Session
 	reported     []core.ReportedCost
 	reportedDays []time.Time
+	usageDays    []core.DayUsage
 	err          error
 	background   bool
 }
@@ -40,6 +41,7 @@ type Model struct {
 	sessions, shown              []core.Session
 	reportedCosts                []core.ReportedCost
 	reportedCostDays             []time.Time
+	usageDays                    []core.DayUsage
 	width, height, tab, sortMode int
 	provider                     core.Provider
 	search                       string
@@ -67,6 +69,7 @@ type Model struct {
 	transcriptQuery              string
 	transcriptDraft              string
 	transcriptInput              bool
+	transcriptRegex              bool
 	transcriptLoading            bool
 	transcriptReport             sessionsearch.Report
 	transcriptOffset             int
@@ -124,7 +127,11 @@ func (m Model) load(background bool) tea.Cmd {
 			return sessionsMsg{err: e, background: background}
 		}
 		reported, days, e := m.monitor.ReportedCosts(context.Background())
-		return sessionsMsg{sessions: s, reported: reported, reportedDays: days, err: e, background: background}
+		if e != nil {
+			return sessionsMsg{err: e, background: background}
+		}
+		usageDays, e := m.monitor.UsageDays(context.Background(), time.Time{})
+		return sessionsMsg{sessions: s, reported: reported, reportedDays: days, usageDays: usageDays, err: e, background: background}
 	}
 }
 
@@ -188,6 +195,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.sessions = x.sessions
 			m.reportedCosts = x.reported
 			m.reportedCostDays = x.reportedDays
+			m.usageDays = x.usageDays
 			m.rebuild()
 		}
 		return m, nil

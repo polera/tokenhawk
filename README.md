@@ -18,6 +18,10 @@ Selecting a session opens a detail view that breaks out parent and subagent usag
 
 ![Tokenhawk session detail with parent and subagent breakdown](assets/detail.png)
 
+Option 4 searches user and assistant transcript text on demand across providers. Literal matching is the default; `Ctrl+R` toggles Go regular-expression matching.
+
+![Tokenhawk transcript search using a regular expression across multiple providers](assets/search.png)
+
 Option 3 opens spend analysis with UTC token and cost line graphs, provider/model/day breakdowns, and explicit JSON/CSV export shortcuts.
 
 ![Tokenhawk spend analysis with token and cost line graphs, breakdowns, and JSON/CSV exports](assets/reporting.png)
@@ -110,17 +114,18 @@ Search current and previous sessions with a case-insensitive literal query:
 tokenhawk search "database migration"
 tokenhawk search --provider codex --project "$PWD" --since 30d "SQLite"
 tokenhawk search --role user --session SESSION_ID --format json "cache invalidation"
+tokenhawk search --regex 'migration \d+_\w+'
 ```
 
-Search reads Claude, Codex (including archived sessions), Gemini, Pi, and OpenCode transcripts directly each time it runs. Results contain the provider, session, project, timestamp, role, and a short matching snippet, newest first. Use `--until`, `--limit`, or `--case-sensitive` to narrow the result set. Search flags must precede the query.
+Search reads Claude, Codex (including archived sessions), Gemini, Antigravity CLI, Pi, and OpenCode transcripts directly each time it runs. Results contain the provider, session, project, timestamp, role, and a short matching snippet, newest first. Use `--until`, `--limit`, or `--case-sensitive` to narrow the result set, or `--regex` to treat the query as a Go regular expression. Search flags must precede the query.
 
-Inside the interactive TUI, press `4` to open Transcript Search, type a query, and press Enter. Use the arrow or page keys to select a result, Enter to open its normal session detail view, `p` to search the next provider, `/` to edit the query, and `r` to refresh results from the provider stores.
+Inside the interactive TUI, press `4` to open Transcript Search, type a query, and press Enter. Use the arrow or page keys to select a result, Enter to open its normal session detail view, `p` to search the next provider, `/` to edit the query, `ctrl+r` to toggle between literal and regex matching, and `r` to refresh results from the provider stores.
 
 The numbered views remain available from every dashboard screen. `Tab` and `Shift+Tab` move forward and backward through Live, History, Spend, and Search; `?` opens the complete shortcut reference without leaving the current view.
 
 Every session detail view automatically loads and displays a chronological conversation from the raw transcript after its usage breakdown, containing user and assistant text while excluding tool traffic and reasoning. Use the arrow keys to move by line, Page Up/Page Down (or Left/Right) to move by page, `/` to find text, `n`/`N` to move between matches, `r` to reload, and Escape to return to the session list. Exporting from session details includes the complete loaded conversation with each message's role, timestamp, subagent ID, and text; bulk and headless exports remain metadata-only.
 
-Only user and assistant text is searched. Tool calls, tool results, reasoning blocks, structured credential fields, and other non-message payloads are excluded, and no transcript content is added to Tokenhawk's SQLite index. Search returns one review entry per matching session, represented by its newest hit. As with any transcript viewer, a matching secret that was pasted into a user or assistant message can appear in its snippet. Antigravity conversation bodies currently use an unsupported private protobuf format, so `agy` sessions are skipped silently during content search.
+Only user and assistant text is searched. Tool calls, tool results, reasoning blocks, structured credential fields, and other non-message payloads are excluded, and no transcript content is added to Tokenhawk's SQLite index. Search returns one review entry per matching session, represented by its newest hit. As with any transcript viewer, a matching secret that was pasted into a user or assistant message can appear in its snippet. Antigravity conversation bodies are protobuf payloads inside their SQLite stores; Tokenhawk decodes only their user-input and assistant-prose fields and leaves reasoning summaries, tool invocations, and every other field opaque.
 
 ## Live metrics inside agent sessions
 
@@ -235,7 +240,9 @@ tokenhawk wrap opencode /path/to/project
 tokenhawk wrap opencode --session SESSION_ID
 ```
 
-`tokenhawk wrap` requires `tmux`. Outside tmux it creates a dedicated temporary session with Tokenhawk's colors. Inside tmux it temporarily replaces the current session's right-side status, runs the client, and restores the previous settings when the client exits. All remaining arguments are forwarded unchanged to the selected client.
+`tokenhawk wrap` prefers `tmux`. Outside tmux it creates a dedicated temporary session with Tokenhawk's colors. Inside tmux it temporarily replaces the current session's right-side status, runs the client, and restores the previous settings when the client exits. All remaining arguments are forwarded unchanged to the selected client.
+
+Without tmux — or with `tokenhawk wrap --no-tmux <provider>` — the wrapper runs the client in a built-in pseudo-terminal that reserves the bottom terminal row for the same live status line (macOS and Linux only). The client sees a terminal one row shorter; everything else, including keystrokes, resizes, and colors, passes through unchanged.
 
 ## Controls
 
@@ -262,7 +269,7 @@ Press `3` for tokens and cost across a window instead of per session. The view t
 
 ```text
 SPEND · last 7 days
-2026-07-13 09:41 → now  •  23 of 25 sessions  •  counted by last session update
+2026-07-13 09:41 → now  •  23 of 25 sessions  •  usage counted on the UTC day it was indexed
 
 TOTAL  tokens 17.30M  in 16.71M  cached 15.99M (96%)  out 238.3k  i:o 70.1:1
        $20.184584 API rate
@@ -316,7 +323,7 @@ token-and-cost time-series point per UTC day, including zero-value days. Daily
 resolution is the finest available because provider stores expose running
 session totals rather than timestamped token events.
 
-Provider stores record one running total per session rather than a timestamped ledger, so a session's whole usage is counted on the day it was last updated. Sessions that span days or that resume after the window opens are therefore attributed to that single day, which the view states rather than implying a per-day ledger it cannot derive.
+Provider stores record one running total per session rather than a timestamped ledger, so Tokenhawk maintains its own: each scan records how much every session grew on the current UTC day. A long-running session's usage is therefore spread across the days it was actually active while Tokenhawk was indexing. History discovered in a single pass — a first scan or a `--rebuild` — cannot be split retroactively and lands on the session's last-update day.
 
 ## Headless export
 
@@ -378,8 +385,8 @@ the overlapping Claude API-rate cost, while keeping local session tokens
 and API-rate costs for other providers. It displays reported and API-rate dollars
 separately when both occur in a window. Anthropic's report has no local session
 or project ID, so reported costs are not assigned to individual sessions and
-are excluded while a Spend search is active. Daily cost buckets are UTC even
-though local session totals remain attributed to the day of their last update.
+are excluded while a Spend search is active. Both the local usage ledger and
+the reported cost buckets use UTC days.
 
 The Admin API is unavailable to individual accounts. For Pro and Max
 subscriptions, model use is included in the subscription and there is no

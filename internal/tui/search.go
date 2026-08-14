@@ -46,6 +46,9 @@ func (m Model) updateTranscriptInput(k tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.transcriptInput = false
 		m.transcriptDraft = ""
 		m.notice = ""
+	case "ctrl+r":
+		m.transcriptRegex = !m.transcriptRegex
+		m.notice = transcriptModeNotice(m.transcriptRegex)
 	case "backspace":
 		runes := []rune(m.transcriptDraft)
 		if len(runes) > 0 {
@@ -82,6 +85,12 @@ func (m Model) updateTranscript(k tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		if m.transcriptQuery != "" {
 			return m, m.startTranscriptSearch()
 		}
+	case "ctrl+r":
+		m.transcriptRegex = !m.transcriptRegex
+		m.notice = transcriptModeNotice(m.transcriptRegex)
+		if m.transcriptQuery != "" {
+			return m, m.startTranscriptSearch()
+		}
 	case "p":
 		m.cycleProvider()
 		m.rebuild()
@@ -108,10 +117,17 @@ func (m Model) updateTranscript(k tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func transcriptModeNotice(regex bool) string {
+	if regex {
+		return "regex search enabled; ctrl+r returns to literal matching"
+	}
+	return "literal search enabled; ctrl+r switches to regex matching"
+}
+
 func (m *Model) startTranscriptSearch() tea.Cmd {
 	m.transcriptRequest++
 	request := m.transcriptRequest
-	query := sessionsearch.Query{Text: m.transcriptQuery, Provider: m.provider, Limit: transcriptResultLimit}
+	query := sessionsearch.Query{Text: m.transcriptQuery, Provider: m.provider, Limit: transcriptResultLimit, Regex: m.transcriptRegex}
 	mon := m.monitor
 	m.transcriptLoading = true
 	m.transcriptOffset = 0

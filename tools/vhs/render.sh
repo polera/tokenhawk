@@ -30,7 +30,7 @@ exec ./tokenhawk --config "$DEMO/empty.toml" \\
 EOF
 chmod +x "$DEMO/run.sh"
 
-tapes=${*:-"dashboard detail reporting compact"}
+tapes=${*:-"dashboard detail search reporting compact"}
 for t in $tapes; do
   # Fresh fixtures + index per tape so the active/inactive split (a wall-clock
   # threshold) is identical every run and can't drift between renders.

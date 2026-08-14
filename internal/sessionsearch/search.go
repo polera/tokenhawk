@@ -13,10 +13,12 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"time"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/polera/tokenhawk/internal/config"
 	"github.com/polera/tokenhawk/internal/core"
@@ -37,6 +39,21 @@ type Query struct {
 	Limit         int
 	CaseSensitive bool
 	FullText      bool
+	// Regex treats Text as a Go regular expression instead of a literal
+	// substring. Case-insensitive unless CaseSensitive is also set.
+	Regex bool
+
+	pattern *regexp.Regexp
+}
+
+// matchText reports whether message text satisfies the query: a compiled
+// regular expression in regex mode, otherwise literal containment. An empty
+// query matches everything, which full-text session loads rely on.
+func (q Query) matchText(text string) bool {
+	if q.pattern != nil {
+		return q.pattern.MatchString(text)
+	}
+	return contains(text, q.Text, q.CaseSensitive)
 }
 
 type Match struct {
@@ -134,12 +151,16 @@ func search(ctx context.Context, cfg config.Config, query Query, allowEmpty bool
 	if query.Role != "" && query.Role != "user" && query.Role != "assistant" {
 		return Report{}, fmt.Errorf("unsupported role %q (expected user or assistant)", query.Role)
 	}
-	if query.Provider == core.Agy {
-		report := Report{Query: query.Text, Matches: []Match{}}
-		if allowEmpty {
-			report.Unsupported = []core.Provider{core.Agy}
+	if query.Regex && query.Text != "" {
+		pattern := query.Text
+		if !query.CaseSensitive {
+			pattern = "(?i)" + pattern
 		}
-		return report, nil
+		compiled, compileErr := regexp.Compile(pattern)
+		if compileErr != nil {
+			return Report{}, fmt.Errorf("invalid regular expression: %w", compileErr)
+		}
+		query.pattern = compiled
 	}
 
 	claudeDir, codexDir, geminiDir := cfg.ClaudeDir, cfg.CodexDir, cfg.GeminiDir
@@ -153,6 +174,8 @@ func search(ctx context.Context, cfg config.Config, query Query, allowEmpty bool
 			codexDir = cfg.CodexDir
 		case core.Gemini:
 			geminiDir = cfg.GeminiDir
+		case core.Agy:
+			agyDir = cfg.AgyDir
 		case core.Pi:
 			piDir = cfg.PiDir
 		case core.OpenCode:
@@ -172,9 +195,6 @@ func search(ctx context.Context, cfg config.Config, query Query, allowEmpty bool
 		if query.Provider != "" && provider != query.Provider {
 			continue
 		}
-		if provider == core.Agy {
-			continue
-		}
 
 		var matches []Match
 		switch provider {
@@ -184,6 +204,8 @@ func search(ctx context.Context, cfg config.Config, query Query, allowEmpty bool
 			matches, err = searchCodex(path, query)
 		case core.Gemini:
 			matches, err = searchGemini(path, query)
+		case core.Agy:
+			matches, err = searchAgy(path, query)
 		case core.Pi:
 			matches, err = searchPi(path, query)
 		case core.OpenCode:
@@ -273,10 +295,10 @@ func matchMessage(query Query, message transcriptMessage) (Match, bool) {
 	if !query.Until.IsZero() && !message.Timestamp.IsZero() && message.Timestamp.After(query.Until) {
 		return Match{}, false
 	}
-	if !contains(message.Text, query.Text, query.CaseSensitive) {
+	if !query.matchText(message.Text) {
 		return Match{}, false
 	}
-	resultText := snippet(message.Text, query.Text, query.CaseSensitive)
+	resultText := snippet(message.Text, query)
 	if query.FullText {
 		resultText = strings.TrimSpace(message.Text)
 	}
@@ -674,19 +696,31 @@ func scanJSONL(path string, visit func([]byte)) error {
 	}
 }
 
-func snippet(text, query string, caseSensitive bool) string {
+// snippet locates the query hit inside whitespace-collapsed text and returns
+// a short excerpt around it. A regex that matched the original text may not
+// match the collapsed form (for example a pattern spanning newlines); the
+// excerpt then simply starts at the beginning of the message.
+func snippet(text string, query Query) string {
 	text = strings.Join(strings.FieldsFunc(text, unicode.IsSpace), " ")
-	haystack, needle := []rune(text), []rune(query)
-	if !caseSensitive {
-		haystack, needle = []rune(strings.ToLower(text)), []rune(strings.ToLower(query))
-	}
-	position := runeIndex(haystack, needle)
-	if position < 0 {
-		position = 0
-	}
 	original := []rune(text)
+	position, length := 0, 0
+	if query.pattern != nil {
+		if loc := query.pattern.FindStringIndex(text); loc != nil {
+			position = utf8.RuneCountInString(text[:loc[0]])
+			length = utf8.RuneCountInString(text[loc[0]:loc[1]])
+		}
+	} else {
+		haystack, needle := []rune(text), []rune(query.Text)
+		if !query.CaseSensitive {
+			haystack, needle = []rune(strings.ToLower(text)), []rune(strings.ToLower(query.Text))
+		}
+		if index := runeIndex(haystack, needle); index >= 0 {
+			position = index
+		}
+		length = len(needle)
+	}
 	start := max(0, position-60)
-	end := min(len(original), position+len(needle)+140)
+	end := min(len(original), position+length+140)
 	result := string(original[start:end])
 	if start > 0 {
 		result = "…" + result

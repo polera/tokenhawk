@@ -230,7 +230,7 @@ func spendRecordCost(records []spendRecord) spendCost {
 // billing ledger. Claude API-rate costs are suppressed only on UTC days whose
 // successful API fetch is recorded in reportedCostDays.
 func (m Model) spendRecords() []spendRecord {
-	records := sessionRecords(m.shown)
+	records := m.sessionDayRecords()
 	if m.provider != "" && m.provider != core.Claude || m.search != "" {
 		return records
 	}
@@ -263,6 +263,48 @@ func (m Model) spendRecords() []spendRecord {
 	return records
 }
 
+// sessionDayRecords builds spend rows from the daily usage ledger, so a
+// session's growth lands on the UTC days it was indexed rather than entirely
+// on its last update. Ledger days before the window are excluded even when
+// the session itself is shown. Sessions without ledger rows (an index written
+// by an older Tokenhawk) keep last-update attribution.
+func (m Model) sessionDayRecords() []spendRecord {
+	type sessionKey struct {
+		provider core.Provider
+		id       string
+	}
+	covered := map[sessionKey]bool{}
+	for _, row := range m.usageDays {
+		covered[sessionKey{row.Provider, row.SessionID}] = true
+	}
+	shown := map[sessionKey]bool{}
+	var fallback []core.Session
+	for _, session := range m.shown {
+		key := sessionKey{session.Provider, session.ID}
+		if covered[key] {
+			shown[key] = true
+		} else {
+			fallback = append(fallback, session)
+		}
+	}
+	records := sessionRecords(fallback)
+	var windowDay time.Time
+	if !m.spendSince.IsZero() {
+		y, month, d := m.spendSince.UTC().Date()
+		windowDay = time.Date(y, month, d, 0, 0, 0, 0, time.UTC)
+	}
+	for _, row := range m.usageDays {
+		if !shown[sessionKey{row.Provider, row.SessionID}] {
+			continue
+		}
+		if !windowDay.IsZero() && row.Day.Before(windowDay) {
+			continue
+		}
+		records = append(records, newSessionSpendRecord(row.Provider, row.SessionID, row.Day, row.Day, row.Usage))
+	}
+	return records
+}
+
 func (m Model) reportedDayInWindow(day time.Time) bool {
 	if m.spendSince.IsZero() {
 		return true
@@ -280,7 +322,7 @@ func (m Model) spendContent() string {
 		window = since.Format("2006-01-02 15:04") + " → now"
 	}
 	b.WriteString(titleStyle.Render("SPEND · "+label) + "\n")
-	fmt.Fprintf(&b, "%s\n\n", muted.Render(fmt.Sprintf("%s  •  %d of %d sessions  •  counted by last session update", window, len(m.shown), len(m.sessions))))
+	fmt.Fprintf(&b, "%s\n\n", muted.Render(fmt.Sprintf("%s  •  %d of %d sessions  •  usage counted on the UTC day it was indexed", window, len(m.shown), len(m.sessions))))
 	records := m.spendRecords()
 	if len(records) == 0 {
 		b.WriteString(muted.Render("No sessions were updated in this window. Press t for another range or d to set one.") + "\n")
@@ -409,7 +451,7 @@ func (m Model) spendExportReport(until time.Time) exporter.SpendReport {
 		Until:                until.UTC(),
 		Provider:             m.provider,
 		Search:               m.search,
-		Attribution:          "usage is attributed to the UTC day of the last session update; period_end is exclusive",
+		Attribution:          "usage is attributed to the UTC day it was indexed; history indexed in one pass lands on the session's last update day; period_end is exclusive",
 		TimeseriesResolution: "1 day UTC",
 	}
 	if !m.spendSince.IsZero() {

@@ -9,10 +9,12 @@ import (
 	"syscall"
 )
 
-// Wrap runs a provider CLI with a live Tokenhawk tmux status bar. In an
-// existing tmux session it temporarily replaces status-right; otherwise it
-// creates and attaches to a dedicated session.
-func Wrap(provider string, providerArgs []string) error {
+// Wrap runs a provider CLI with a live Tokenhawk status line. With tmux
+// available it uses a tmux status bar: in an existing tmux session it
+// temporarily replaces status-right, otherwise it creates and attaches to a
+// dedicated session. Without tmux, or when noTmux is set, it falls back to a
+// built-in pseudo-terminal wrapper that reserves the bottom terminal row.
+func Wrap(provider string, providerArgs []string, noTmux bool) error {
 	if provider != "claude" && provider != "codex" && provider != "gemini" && provider != "agy" && provider != "pi" && provider != "opencode" {
 		return fmt.Errorf("unsupported provider %q (expected claude, codex, gemini, agy, pi, or opencode)", provider)
 	}
@@ -20,8 +22,11 @@ func Wrap(provider string, providerArgs []string) error {
 	if err != nil {
 		return fmt.Errorf("find %s CLI: %w", provider, err)
 	}
+	if noTmux {
+		return wrapPTY(client, provider, providerArgs)
+	}
 	if _, err = exec.LookPath("tmux"); err != nil {
-		return fmt.Errorf("tokenhawk wrap requires tmux: %w", err)
+		return wrapPTY(client, provider, providerArgs)
 	}
 	tokenhawk, err := os.Executable()
 	if err != nil {

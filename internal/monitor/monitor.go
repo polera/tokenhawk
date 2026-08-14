@@ -272,6 +272,12 @@ func (m *Monitor) ReportedCosts(ctx context.Context) ([]core.ReportedCost, []tim
 	return m.store.ReportedCosts(ctx)
 }
 
+// UsageDays exposes the daily usage ledger so spend views can attribute a
+// session's growth to the UTC days it was indexed on.
+func (m *Monitor) UsageDays(ctx context.Context, since time.Time) ([]core.DayUsage, error) {
+	return m.store.UsageDays(ctx, since)
+}
+
 func (m *Monitor) syncReportedCosts(ctx context.Context) error {
 	if m.costs == nil {
 		return nil

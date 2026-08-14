@@ -153,11 +153,15 @@ func (m Model) contextLine() string {
 }
 
 func (m Model) inputLine() string {
+	regexTag := ""
+	if m.transcriptRegex {
+		regexTag = warnStyle.Render(" REGEX")
+	}
 	switch {
 	case m.transcriptInput:
-		return keyStyle.Render("SEARCH") + "  " + m.transcriptDraft + titleStyle.Render("▌")
+		return keyStyle.Render("SEARCH") + regexTag + "  " + m.transcriptDraft + titleStyle.Render("▌")
 	case m.tab == transcriptTab && m.transcriptQuery != "":
-		return muted.Render("query: " + m.transcriptQuery)
+		return muted.Render("query: "+m.transcriptQuery) + regexTag
 	case m.sinceInput:
 		return keyStyle.Render("SINCE") + "  " + m.sinceDraft + titleStyle.Render("▌")
 	case m.searching:
@@ -174,7 +178,7 @@ func (m Model) footerHints() []keyHint {
 	case spendTab:
 		return []keyHint{{"↑↓", "scroll"}, {"t", "range"}, {"d", "since"}, {"e", "JSON"}, {"x", "CSV"}, {"p", "provider"}, {"Tab", "next view"}, {"?", "shortcuts"}, {"q", "quit"}}
 	case transcriptTab:
-		return []keyHint{{"↑↓", "select"}, {"Enter", "open"}, {"/", "query"}, {"r", "refresh"}, {"p", "provider"}, {"Tab", "next view"}, {"?", "shortcuts"}, {"q", "quit"}}
+		return []keyHint{{"↑↓", "select"}, {"Enter", "open"}, {"/", "query"}, {"^r", "regex"}, {"r", "refresh"}, {"p", "provider"}, {"Tab", "next view"}, {"?", "shortcuts"}, {"q", "quit"}}
 	default:
 		return []keyHint{{"↑↓", "select"}, {"Enter", "details"}, {"/", "filter"}, {"p", "provider"}, {"s", "sort"}, {"Tab", "next view"}, {"?", "shortcuts"}, {"q", "quit"}}
 	}
@@ -250,6 +254,7 @@ func (m Model) helpView() string {
 
 	body.WriteString(panelTitle.Render("REFINE") + "\n")
 	body.WriteString(shortcutRow("/", "Filter sessions or search visible content") + "\n")
+	body.WriteString(shortcutRow("Ctrl+R", "Toggle regex transcript search") + "\n")
 	body.WriteString(shortcutRow("p", "Cycle provider") + "\n")
 	body.WriteString(shortcutRow("s", "Cycle session sorting") + "\n")
 	body.WriteString(shortcutRow("t / d", "Cycle or type a spend window") + "\n\n")

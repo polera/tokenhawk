@@ -60,10 +60,16 @@ func Run(args []string, version string) error {
 			statuslineProvider = args[0]
 			args = args[1:]
 		case "wrap":
-			if len(args) < 2 {
+			rest := args[1:]
+			noTmux := false
+			if len(rest) > 0 && rest[0] == "--no-tmux" {
+				noTmux = true
+				rest = rest[1:]
+			}
+			if len(rest) == 0 {
 				return fmt.Errorf("wrap requires a provider: claude, codex, gemini, agy, pi, or opencode")
 			}
-			return integration.Wrap(args[1], args[2:])
+			return integration.Wrap(rest[0], rest[1:], noTmux)
 		case "version":
 			fmt.Println(version)
 			return nil
@@ -102,7 +108,7 @@ func Run(args []string, version string) error {
 		fmt.Fprintln(fs.Output(), "       tokenhawk search [flags] <query>")
 		fmt.Fprintln(fs.Output(), "       tokenhawk status [flags]")
 		fmt.Fprintln(fs.Output(), "       tokenhawk statusline <claude|codex|gemini|agy|pi|opencode> [flags]")
-		fmt.Fprintln(fs.Output(), "       tokenhawk wrap <claude|codex|gemini|agy|pi|opencode> [client arguments]")
+		fmt.Fprintln(fs.Output(), "       tokenhawk wrap [--no-tmux] <claude|codex|gemini|agy|pi|opencode> [client arguments]")
 		fmt.Fprintln(fs.Output(), "       tokenhawk upgrade")
 		fmt.Fprintln(fs.Output(), "       tokenhawk version")
 		fs.PrintDefaults()
@@ -142,6 +148,7 @@ func Run(args []string, version string) error {
 	role := fs.String("role", "", "search only user or assistant messages")
 	limit := fs.Int("limit", 100, "maximum search results")
 	caseSensitive := fs.Bool("case-sensitive", false, "make transcript search case-sensitive")
+	regex := fs.Bool("regex", false, "treat the transcript search query as a Go regular expression")
 	if command == "statusline" {
 		*provider = statuslineProvider
 	}
@@ -179,7 +186,7 @@ func Run(args []string, version string) error {
 		report, searchErr := sessionsearch.Search(ctx, cfg, sessionsearch.Query{
 			Text: strings.Join(fs.Args(), " "), Provider: selectedProvider, SessionID: *sessionID,
 			Project: *project, Role: *role, Since: sinceTime, Until: untilTime,
-			Limit: *limit, CaseSensitive: *caseSensitive,
+			Limit: *limit, CaseSensitive: *caseSensitive, Regex: *regex,
 		})
 		if searchErr != nil {
 			return searchErr

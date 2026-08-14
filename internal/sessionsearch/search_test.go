@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/binary"
 	"os"
 	"path/filepath"
 	"strings"
@@ -199,17 +200,108 @@ func TestConversationReturnsCompleteMessagesChronologically(t *testing.T) {
 	}
 }
 
-func TestSearchSilentlySkipsAgy(t *testing.T) {
+func TestRegexSearchMatchesPatternsAndSnippets(t *testing.T) {
 	cfg := fixtureConfig(t, t.TempDir())
-	mustWrite(t, filepath.Join(cfg.AgyDir, "conversations", "conversation.db"), "private protobuf")
-	for _, query := range []Query{{Text: "needle"}, {Text: "needle", Provider: core.Agy}} {
-		report, err := Search(context.Background(), cfg, query)
+	path := filepath.Join(cfg.CodexDir, "sessions", "codex.jsonl")
+	mustWrite(t, path, `{"type":"session_meta","timestamp":"2026-08-09T12:00:00Z","payload":{"id":"codex-1","cwd":"/work/regex"}}
+{"type":"event_msg","timestamp":"2026-08-09T12:01:00Z","payload":{"type":"user_message","message":"run migration 00042_add_index before deploy"}}
+{"type":"event_msg","timestamp":"2026-08-09T12:02:00Z","payload":{"type":"agent_message","message":"nothing relevant here"}}
+`)
+
+	report, err := Search(context.Background(), cfg, Query{Text: `MIGRATION \d+_\w+`, Regex: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Matches) != 1 {
+		t.Fatalf("got %d regex matches: %#v", len(report.Matches), report.Matches)
+	}
+	if !strings.Contains(report.Matches[0].Snippet, "migration 00042_add_index") {
+		t.Fatalf("regex snippet missing hit: %#v", report.Matches[0])
+	}
+
+	// Case-sensitive regex must reject the lowercase transcript text.
+	report, err = Search(context.Background(), cfg, Query{Text: `MIGRATION \d+`, Regex: true, CaseSensitive: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Matches) != 0 {
+		t.Fatalf("case-sensitive regex matched unexpectedly: %#v", report.Matches)
+	}
+}
+
+func TestRegexSearchRejectsInvalidPattern(t *testing.T) {
+	cfg := fixtureConfig(t, t.TempDir())
+	_, err := Search(context.Background(), cfg, Query{Text: `unbalanced(`, Regex: true})
+	if err == nil || !strings.Contains(err.Error(), "invalid regular expression") {
+		t.Fatalf("invalid regex was not reported: %v", err)
+	}
+}
+
+func TestAgySearchDecodesUserAndAssistantTextOnly(t *testing.T) {
+	cfg := fixtureConfig(t, t.TempDir())
+	createAgyFixture(t, filepath.Join(cfg.AgyDir, "conversations", "agy-1.db"))
+
+	report, err := Search(context.Background(), cfg, Query{Text: "cobalt", Provider: core.Agy})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Warnings) != 0 {
+		t.Fatalf("agy fixture produced warnings: %#v", report.Warnings)
+	}
+	if len(report.Matches) != 1 {
+		t.Fatalf("got %d matches, want the newest per session: %#v", len(report.Matches), report.Matches)
+	}
+	match := report.Matches[0]
+	if match.SessionID != "agy-1" || match.Project != "/work/agy" || match.Role != "assistant" {
+		t.Fatalf("agy metadata not decoded: %#v", match)
+	}
+	if !strings.Contains(match.Snippet, "cobalt rollout is complete") {
+		t.Fatalf("assistant text not decoded: %#v", match)
+	}
+
+	// Reasoning summaries and tool payloads must stay invisible.
+	for _, hidden := range []string{"secret reasoning", "hidden tool payload"} {
+		report, err = Search(context.Background(), cfg, Query{Text: hidden, Provider: core.Agy})
 		if err != nil {
 			t.Fatal(err)
 		}
-		if len(report.Matches) != 0 || len(report.Unsupported) != 0 {
-			t.Fatalf("agy search was not silent: %#v", report)
+		if len(report.Matches) != 0 {
+			t.Fatalf("non-message AGY content leaked for %q: %#v", hidden, report.Matches)
 		}
+	}
+}
+
+func TestAgyConversationReturnsChronologicalMessages(t *testing.T) {
+	cfg := fixtureConfig(t, t.TempDir())
+	createAgyFixture(t, filepath.Join(cfg.AgyDir, "conversations", "agy-1.db"))
+
+	report, err := Conversation(context.Background(), cfg, core.Agy, "agy-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Unsupported) != 0 {
+		t.Fatalf("agy conversations are still marked unsupported: %#v", report)
+	}
+	if len(report.Matches) != 2 {
+		t.Fatalf("got %d conversation messages: %#v", len(report.Matches), report.Matches)
+	}
+	if report.Matches[0].Role != "user" || report.Matches[0].Snippet != "check the cobalt migration" {
+		t.Fatalf("user prompt missing or misordered: %#v", report.Matches[0])
+	}
+	if report.Matches[1].Role != "assistant" || !strings.Contains(report.Matches[1].Snippet, "cobalt rollout is complete") {
+		t.Fatalf("assistant response missing or misordered: %#v", report.Matches[1])
+	}
+}
+
+func TestAgyUnreadableDatabaseSurfacesWarningNotFailure(t *testing.T) {
+	cfg := fixtureConfig(t, t.TempDir())
+	mustWrite(t, filepath.Join(cfg.AgyDir, "conversations", "broken.db"), "not a database")
+	report, err := Search(context.Background(), cfg, Query{Text: "needle"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Matches) != 0 || len(report.Warnings) != 1 {
+		t.Fatalf("broken agy database was not reported as a warning: %#v", report)
 	}
 }
 
@@ -261,6 +353,67 @@ INSERT INTO session VALUES('open-1','/work/open',NULL);
 INSERT INTO message VALUES('m1','open-1',1786190400000,'{"role":"assistant"}');
 INSERT INTO part VALUES('p1','m1','{"type":"text","text":"cobalt OpenCode result"}');`)
 	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+// pbVarint, pbBytes, and pbMessage hand-encode protobuf wire format so the
+// AGY fixtures exercise the real payload layout without a schema dependency.
+func pbVarint(field int, value uint64) []byte {
+	out := binary.AppendUvarint(nil, uint64(field)<<3)
+	return binary.AppendUvarint(out, value)
+}
+
+func pbBytes(field int, value []byte) []byte {
+	out := binary.AppendUvarint(nil, uint64(field)<<3|2)
+	out = binary.AppendUvarint(out, uint64(len(value)))
+	return append(out, value...)
+}
+
+func pbString(field int, value string) []byte { return pbBytes(field, []byte(value)) }
+
+func pbMessage(field int, parts ...[]byte) []byte {
+	var inner []byte
+	for _, part := range parts {
+		inner = append(inner, part...)
+	}
+	return pbBytes(field, inner)
+}
+
+func createAgyFixture(t *testing.T, path string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err = db.Exec("CREATE TABLE steps(idx INTEGER PRIMARY KEY, step_type INTEGER NOT NULL, step_payload BLOB);\n" +
+		"CREATE TABLE trajectory_metadata_blob(id TEXT PRIMARY KEY, data BLOB);"); err != nil {
+		t.Fatal(err)
+	}
+	meta := func(seconds uint64) []byte {
+		return pbMessage(5, pbMessage(1, pbVarint(1, seconds)))
+	}
+	userStep := append(pbVarint(1, 14), meta(1785286209)...)
+	userStep = append(userStep, pbMessage(19, pbString(2, "check the cobalt migration"))...)
+	toolStep := append(pbVarint(1, 15), meta(1785286215)...)
+	toolStep = append(toolStep, pbMessage(20,
+		pbString(3, "secret reasoning about cobalt"),
+		pbMessage(7, pbString(2, "hidden tool payload cobalt")))...)
+	responseStep := append(pbVarint(1, 15), meta(1785286230)...)
+	responseStep = append(responseStep, pbMessage(20,
+		pbString(1, "the cobalt rollout is complete"),
+		pbString(3, "secret reasoning trailing"))...)
+	for i, payload := range [][]byte{userStep, toolStep, responseStep} {
+		if _, err = db.Exec(`INSERT INTO steps(idx, step_type, step_payload) VALUES(?,?,?)`, i, int(payload[1]), payload); err != nil {
+			t.Fatal(err)
+		}
+	}
+	blob := pbString(7, "file:///work/agy")
+	if _, err = db.Exec(`INSERT INTO trajectory_metadata_blob(id, data) VALUES('main', ?)`, blob); err != nil {
 		t.Fatal(err)
 	}
 }

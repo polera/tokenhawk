@@ -46,6 +46,19 @@ func (c ReportedCost) USD() float64 {
 	return float64(c.AmountNanoUSD) / 1_000_000_000
 }
 
+// DayUsage is one session's usage growth observed on a single UTC day.
+// Provider stores expose only per-session running totals, so each row records
+// the delta Tokenhawk indexed on that day; summed across days the rows equal
+// the session's cumulative totals. History indexed in one pass (a first scan
+// or a rebuild) lands on the session's last-update day, matching the previous
+// whole-session attribution.
+type DayUsage struct {
+	Provider  Provider  `json:"provider"`
+	SessionID string    `json:"session_id"`
+	Day       time.Time `json:"day"`
+	Usage     Usage     `json:"usage"`
+}
+
 type Session struct {
 	Provider     Provider   `json:"provider"`
 	ID           string     `json:"session_id"`
