@@ -3,19 +3,19 @@ package providers
 import (
 	"bufio"
 	"bytes"
+	"crypto/sha256"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/polera/tokenhawk/internal/core"
-	_ "modernc.org/sqlite"
+	"github.com/polera/tokenhawk/internal/opencodestore"
 )
 
 func Discover(claudeDir, codexDir, geminiDir, agyDir, piDir, openCodeDB string) ([]string, error) {
@@ -225,7 +225,11 @@ type openCodeMessage struct {
 	ModelID    string  `json:"modelID"`
 	ProviderID string  `json:"providerID"`
 	Cost       float64 `json:"cost"`
-	Tokens     struct {
+	Model      struct {
+		ID         string `json:"id"`
+		ProviderID string `json:"providerID"`
+	} `json:"model"`
+	Tokens struct {
 		Input     int64 `json:"input"`
 		Output    int64 `json:"output"`
 		Reasoning int64 `json:"reasoning"`
@@ -240,17 +244,26 @@ type openCodeMessage struct {
 // ParseOpenCodeDB reads OpenCode's SQLite store without modifying it. Each
 // returned record uses a stable synthetic source path so Tokenhawk can
 // reconcile sessions independently even though they share one database file.
-// The optional unchanged callback avoids rereading message rows for sessions
-// whose OpenCode update timestamp is already indexed. sources always contains
+// The optional unchanged callback compares content fingerprints, since message
+// usage can change without advancing the session timestamp. sources always contains
 // every current synthetic path so callers can still reconcile deletions.
-func ParseOpenCodeDB(path string, unchanged func(source string, updated time.Time) bool) ([]core.Parsed, []string, error) {
-	databaseURL := url.URL{Scheme: "file", Path: filepath.ToSlash(path)}
-	db, err := sql.Open("sqlite", databaseURL.String()+"?mode=ro&_pragma=busy_timeout%3D1000")
+func ParseOpenCodeDB(path string, unchanged func(source string, state string) bool) ([]core.Parsed, []string, error) {
+	db, err := opencodestore.Open(path)
 	if err != nil {
 		return nil, nil, err
 	}
 	defer db.Close()
-	rows, err := db.Query(`SELECT id,directory,parent_id,title,agent,time_created,time_updated FROM session ORDER BY time_updated`)
+	// Keep metadata and usage in the same WAL snapshot during active writes.
+	tx, err := db.Begin()
+	if err != nil {
+		return nil, nil, err
+	}
+	defer tx.Rollback()
+	schema, err := opencodestore.Detect(tx)
+	if err != nil {
+		return nil, nil, err
+	}
+	rows, err := tx.Query(`SELECT id,directory,parent_id,title,` + schema.Agent + `,time_created,time_updated FROM ` + schema.Session + ` ORDER BY time_updated`)
 	if err != nil {
 		return nil, nil, fmt.Errorf("read OpenCode sessions: %w", err)
 	}
@@ -264,6 +277,10 @@ func ParseOpenCodeDB(path string, unchanged func(source string, updated time.Tim
 		}
 		row.parentID, row.title, row.agent = parent.String, title.String, agent.String
 		sessions = append(sessions, row)
+	}
+	if err = rows.Err(); err != nil {
+		_ = rows.Close()
+		return nil, nil, err
 	}
 	if err = rows.Close(); err != nil {
 		return nil, nil, err
@@ -281,12 +298,14 @@ func ParseOpenCodeDB(path string, unchanged func(source string, updated time.Tim
 		}
 		source := path + "#session=" + row.id
 		sources = append(sources, source)
-		if unchanged != nil && unchanged(source, updated) {
-			continue
-		}
-		usage, err := openCodeUsage(db, row.id)
+		usage, messageState, err := openCodeUsage(tx, schema, row.id)
 		if err != nil {
 			return nil, nil, err
+		}
+		metadata, _ := json.Marshal([]any{row.id, row.directory, row.parentID, row.title, row.agent, row.created, row.updated, schema.V2, messageState})
+		state := fmt.Sprintf("opencode-v2:%x", sha256.Sum256(metadata))
+		if unchanged != nil && unchanged(source, state) {
+			continue
 		}
 		if row.parentID != "" {
 			name := row.title
@@ -294,29 +313,42 @@ func ParseOpenCodeDB(path string, unchanged func(source string, updated time.Tim
 				name = row.agent
 			}
 			agent := core.Subagent{ID: row.id, ParentID: row.parentID, Name: name, AgentPath: row.agent, StartedAt: started, UpdatedAt: updated, Status: "unknown", SourceHealth: "ok", Usage: usage}
-			parsed = append(parsed, core.Parsed{Subagent: &agent, Provider: core.OpenCode, SourcePath: source, Offset: updated.UnixNano(), Replace: true})
+			parsed = append(parsed, core.Parsed{Subagent: &agent, Provider: core.OpenCode, SourcePath: source, Offset: updated.UnixNano(), ParserState: state, Replace: true})
 			continue
 		}
 		session := core.Session{Provider: core.OpenCode, ID: row.id, Project: row.directory, StartedAt: started, UpdatedAt: updated, SourcePath: source, SourceHealth: "ok", Usage: usage}
-		parsed = append(parsed, core.Parsed{Session: session, Provider: core.OpenCode, SourcePath: source, Offset: updated.UnixNano(), Replace: true})
+		parsed = append(parsed, core.Parsed{Session: session, Provider: core.OpenCode, SourcePath: source, Offset: updated.UnixNano(), ParserState: state, Replace: true})
 	}
 	return parsed, sources, nil
 }
 
-func openCodeUsage(db *sql.DB, sessionID string) ([]core.Usage, error) {
-	rows, err := db.Query(`SELECT data FROM message WHERE session_id=? ORDER BY time_created,id`, sessionID)
+func openCodeUsage(tx *sql.Tx, schema opencodestore.Schema, sessionID string) ([]core.Usage, string, error) {
+	messageType := "''"
+	if schema.V2 {
+		messageType = "type"
+	}
+	rows, err := tx.Query(`SELECT id,`+messageType+`,data FROM `+schema.Message+` WHERE session_id=? ORDER BY time_created,id`, sessionID)
 	if err != nil {
-		return nil, fmt.Errorf("read OpenCode messages for %s: %w", sessionID, err)
+		return nil, "", fmt.Errorf("read OpenCode messages for %s: %w", sessionID, err)
 	}
 	defer rows.Close()
 	usage := map[string]*core.Usage{}
+	hash := sha256.New()
 	for rows.Next() {
-		var data string
-		if err = rows.Scan(&data); err != nil {
-			return nil, err
+		var id, typ, data string
+		if err = rows.Scan(&id, &typ, &data); err != nil {
+			return nil, "", err
 		}
+		encoded, _ := json.Marshal([]string{id, typ, data})
+		_, _ = hash.Write(encoded)
 		var message openCodeMessage
-		if json.Unmarshal([]byte(data), &message) != nil || message.Role != "assistant" {
+		if json.Unmarshal([]byte(data), &message) != nil {
+			continue
+		}
+		if schema.V2 {
+			message.Role, message.ModelID, message.ProviderID = typ, message.Model.ID, message.Model.ProviderID
+		}
+		if message.Role != "assistant" {
 			continue
 		}
 		model := message.ModelID
@@ -353,7 +385,7 @@ func openCodeUsage(db *sql.DB, sessionID string) ([]core.Usage, error) {
 			out = append(out, *item)
 		}
 	}
-	return out, rows.Err()
+	return out, fmt.Sprintf("%x", hash.Sum(nil)), rows.Err()
 }
 
 type claudeRecord struct {

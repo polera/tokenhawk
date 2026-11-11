@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -22,8 +21,8 @@ import (
 
 	"github.com/polera/tokenhawk/internal/config"
 	"github.com/polera/tokenhawk/internal/core"
+	"github.com/polera/tokenhawk/internal/opencodestore"
 	"github.com/polera/tokenhawk/internal/providers"
-	_ "modernc.org/sqlite"
 )
 
 const defaultLimit = 100
@@ -579,20 +578,31 @@ func searchPi(path string, query Query) ([]Match, error) {
 }
 
 func searchOpenCode(path string, query Query) ([]Match, error) {
-	databaseURL := url.URL{Scheme: "file", Path: filepath.ToSlash(path)}
-	db, err := sql.Open("sqlite", databaseURL.String()+"?mode=ro&_pragma=busy_timeout%3D1000")
+	db, err := opencodestore.Open(path)
 	if err != nil {
 		return nil, err
 	}
 	defer db.Close()
+	tx, err := db.Begin()
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	schema, err := opencodestore.Detect(tx)
+	if err != nil {
+		return nil, err
+	}
+	if schema.V2 {
+		return searchOpenCodeV2(tx, query)
+	}
 	var hasParts int
-	if err = db.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type='table' AND name='part'`).Scan(&hasParts); err != nil {
+	if err = tx.QueryRow(`SELECT count(*) FROM sqlite_master WHERE type='table' AND name='part'`).Scan(&hasParts); err != nil {
 		return nil, err
 	}
 	if hasParts == 0 {
 		return nil, nil
 	}
-	rows, err := db.Query(`SELECT s.id,s.directory,COALESCE(s.parent_id,''),m.time_created,m.data,p.data
+	rows, err := tx.Query(`SELECT s.id,s.directory,COALESCE(s.parent_id,''),m.time_created,m.data,p.data
 		FROM part p JOIN message m ON m.id=p.message_id JOIN session s ON s.id=m.session_id
 		ORDER BY m.time_created,p.id`)
 	if err != nil {
@@ -627,6 +637,54 @@ func searchOpenCode(path string, query Query) ([]Match, error) {
 		}
 		if match, ok := matchMessage(query, candidate); ok {
 			matches = append(matches, match)
+		}
+	}
+	return matches, rows.Err()
+}
+
+func searchOpenCodeV2(tx *sql.Tx, query Query) ([]Match, error) {
+	rows, err := tx.Query(`SELECT s.id,s.directory,COALESCE(s.parent_id,''),m.time_created,m.type,m.data
+		FROM session_message m JOIN session_v2 s ON s.id=m.session_id
+		WHERE m.type IN ('user','assistant') ORDER BY m.time_created,m.id`)
+	if err != nil {
+		return nil, fmt.Errorf("read OpenCode messages: %w", err)
+	}
+	defer rows.Close()
+	var matches []Match
+	for rows.Next() {
+		var sessionID, project, parentID, role, data string
+		var created int64
+		if err := rows.Scan(&sessionID, &project, &parentID, &created, &role, &data); err != nil {
+			return nil, err
+		}
+		var message struct {
+			Text    string `json:"text"`
+			Content []struct {
+				Type string `json:"type"`
+				Text string `json:"text"`
+			} `json:"content"`
+		}
+		if json.Unmarshal([]byte(data), &message) != nil {
+			continue
+		}
+		var texts []string
+		if role == "user" {
+			texts = append(texts, message.Text)
+		} else {
+			for _, part := range message.Content {
+				if part.Type == "text" {
+					texts = append(texts, part.Text)
+				}
+			}
+		}
+		for _, text := range texts {
+			candidate := transcriptMessage{Provider: core.OpenCode, SessionID: sessionID, Project: project, Timestamp: time.UnixMilli(created), Role: role, Text: text}
+			if parentID != "" {
+				candidate.SessionID, candidate.SubagentID = parentID, sessionID
+			}
+			if match, ok := matchMessage(query, candidate); ok {
+				matches = append(matches, match)
+			}
 		}
 	}
 	return matches, rows.Err()

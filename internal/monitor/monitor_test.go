@@ -2,6 +2,8 @@ package monitor
 
 import (
 	"context"
+	"database/sql"
+	"fmt"
 	"math"
 	"os"
 	"path/filepath"
@@ -14,6 +16,86 @@ import (
 	"github.com/polera/tokenhawk/internal/pricing"
 	"github.com/polera/tokenhawk/internal/store"
 )
+
+func TestOpenCodeLiveSnapshots(t *testing.T) {
+	for _, v2 := range []bool{false, true} {
+		name := "legacy"
+		if v2 {
+			name = "v2"
+		}
+		t.Run(name, func(t *testing.T) {
+			root := t.TempDir()
+			path := filepath.Join(root, "opencode.db")
+			db, err := sql.Open("sqlite", path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer db.Close()
+			sessionTable, messageTable := "session", "message"
+			if v2 {
+				sessionTable, messageTable = "session_v2", "session_message"
+			}
+			exec := func(query string, args ...any) {
+				t.Helper()
+				if _, err := db.Exec(query, args...); err != nil {
+					t.Fatal(err)
+				}
+			}
+			exec(`PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0;`)
+			exec(`CREATE TABLE ` + sessionTable + `(id TEXT PRIMARY KEY,directory TEXT,parent_id TEXT,title TEXT,agent TEXT,time_created INTEGER,time_updated INTEGER)`)
+			exec(`CREATE TABLE ` + messageTable + `(id TEXT PRIMARY KEY,session_id TEXT,type TEXT,time_created INTEGER,time_updated INTEGER,data TEXT)`)
+			exec(`INSERT INTO ` + sessionTable + ` VALUES('parent','/work',NULL,'Main','build',1000,3000),('child','/work','parent','Explore','explore',2000,4000)`)
+			message := func(input int) string {
+				model := `"role":"assistant","providerID":"openai","modelID":"gpt-5"`
+				if v2 {
+					model = `"model":{"providerID":"openai","id":"gpt-5"}`
+				}
+				return fmt.Sprintf(`{%s,"cost":0.25,"tokens":{"input":%d,"output":20,"cache":{"read":40}}}`, model, input)
+			}
+			exec(`INSERT INTO `+messageTable+` VALUES('m1','parent','assistant',2000,2000,?),('m2','child','assistant',3000,3000,?)`, message(100), message(10))
+			index, err := store.Open(filepath.Join(root, "index.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer index.Close()
+			prices, err := pricing.Load("")
+			if err != nil {
+				t.Fatal(err)
+			}
+			m := New(config.Config{OpenCodeDB: path, ActiveWindow: time.Hour}, index, prices)
+			ctx := context.Background()
+			check := func(wantInput int64, wantChildren, wantUpdated int) {
+				t.Helper()
+				if err := m.ScanProvider(ctx, core.OpenCode); err != nil {
+					t.Fatal(err)
+				}
+				sessions, err := m.Sessions(ctx, core.Filter{Provider: core.OpenCode})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if len(sessions) != 1 || sessions[0].ID != "parent" || sessions[0].DirectTotals().Input != wantInput || len(sessions[0].Subagents) != wantChildren {
+					t.Fatalf("snapshot = %#v, want input %d children %d", sessions, wantInput, wantChildren)
+				}
+				if m.Status().Updated != wantUpdated {
+					t.Fatalf("updated = %d, want %d", m.Status().Updated, wantUpdated)
+				}
+			}
+			check(140, 1, 2) // Reads uncheckpointed WAL data and nested model references.
+			check(140, 1, 0)
+			// Neither the session nor message timestamps change: the streaming
+			// payload itself is the only reliable invalidation signal.
+			exec(`UPDATE `+messageTable+` SET data=? WHERE id='m1'`, message(200))
+			check(240, 1, 1)
+			exec(`INSERT INTO `+messageTable+` VALUES('m3','parent','assistant',2000,2000,?)`, message(5))
+			check(285, 1, 1)
+			exec(`DELETE FROM ` + messageTable + ` WHERE id='m3'`)
+			check(240, 1, 1)
+			exec(`DELETE FROM ` + sessionTable + ` WHERE id='child'`)
+			check(240, 0, 0)
+			check(240, 0, 0)
+		})
+	}
+}
 
 type recordingCostFetcher struct {
 	ranges [][2]time.Time

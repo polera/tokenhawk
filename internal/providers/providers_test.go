@@ -212,6 +212,27 @@ INSERT INTO message VALUES('m2','child',3000,'{"role":"assistant","providerID":"
 	}
 }
 
+func TestOpenCodeLegacyWithoutSessionAgent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "opencode.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`CREATE TABLE session(id TEXT,directory TEXT,parent_id TEXT,title TEXT,time_created INTEGER,time_updated INTEGER);
+CREATE TABLE message(id TEXT,session_id TEXT,time_created INTEGER,data TEXT);
+INSERT INTO session VALUES('one','/work',NULL,'Main',1000,2000);`); err != nil {
+		t.Fatal(err)
+	}
+	parsed, sources, err := ParseOpenCodeDB(path, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(parsed) != 1 || len(sources) != 1 || parsed[0].Session.ID != "one" {
+		t.Fatalf("legacy database without agent: %#v, %#v", parsed, sources)
+	}
+}
+
 func mustWrite(t *testing.T, path, data string) {
 	t.Helper()
 	if err := os.WriteFile(path, []byte(data), 0o644); err != nil {

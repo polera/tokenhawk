@@ -102,9 +102,9 @@ Run it in a dedicated terminal tab or window. By default Tokenhawk reads:
 - Gemini: `~/.gemini/tmp/*/chats/session-*.json`
 - Antigravity (`agy`): `~/.gemini/antigravity-cli/conversations/*.db`
 - Pi: `${PI_CODING_AGENT_SESSION_DIR:-~/.pi/agent/sessions}/**/*.jsonl`
-- OpenCode: `${XDG_DATA_HOME:-~/.local/share}/opencode/opencode.db`
+- OpenCode: `$OPENCODE_DB`, or `${XDG_DATA_HOME:-~/.local/share}/opencode/opencode.db` when unset
 
-The rebuildable SQLite index lives under the operating system's user cache directory. OpenCode's database is opened read-only, including live WAL data. Missing provider directories and databases are allowed.
+The rebuildable SQLite index lives under the operating system's user cache directory. OpenCode's database is opened read-only, including live WAL data. Both current OpenCode (`session_v2`/`session_message`) and older (`session`/`message`) stores are supported. Usage refreshes detect message-content changes even when session timestamps do not change. Missing provider directories and databases are allowed. Explicit `opencode_db` configuration or `--opencode-db` overrides the environment default.
 
 ## Search session contents
 
@@ -232,7 +232,7 @@ Tokenhawk respects `PI_CODING_AGENT_DIR` and `PI_CODING_AGENT_SESSION_DIR` when 
 
 ### OpenCode: live tmux status bar
 
-Tokenhawk reads current OpenCode session, message, child-session, token, cache, reasoning, and reported-cost data from its SQLite database. OpenCode documents the database location through [`opencode db path`](https://dev.opencode.ai/docs/cli/):
+Tokenhawk reads OpenCode session, message, child-session, token, cache, reasoning, and reported-cost data from its SQLite database. The [OpenCode troubleshooting guide](https://opencode.ai/docs/troubleshooting#service-files) documents its default location and the `OPENCODE_DB` override:
 
 ```sh
 tokenhawk wrap opencode

@@ -51,13 +51,17 @@ func Defaults() (Config, error) {
 	if dataHome == "" {
 		dataHome = filepath.Join(home, ".local", "share")
 	}
+	openCodeDB := os.Getenv("OPENCODE_DB")
+	if openCodeDB == "" {
+		openCodeDB = filepath.Join(dataHome, "opencode", "opencode.db")
+	}
 	return Config{
 		ClaudeDir:  filepath.Join(home, ".claude", "projects"),
 		CodexDir:   codex,
 		GeminiDir:  filepath.Join(home, ".gemini", "tmp"),
 		AgyDir:     filepath.Join(home, ".gemini", "antigravity-cli"),
 		PiDir:      piDir,
-		OpenCodeDB: filepath.Join(dataHome, "opencode", "opencode.db"),
+		OpenCodeDB: expandHome(openCodeDB),
 		DBPath:     filepath.Join(cache, "tokenhawk", "index.db"),
 		// Admin keys are intentionally read only from the environment so they
 		// are not encouraged into a plaintext Tokenhawk config file.

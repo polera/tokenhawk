@@ -6,6 +6,38 @@ import (
 	"testing"
 )
 
+func TestOpenCodeDatabaseDefaultsAndOverrides(t *testing.T) {
+	dataHome := t.TempDir()
+	t.Setenv("XDG_DATA_HOME", dataHome)
+	t.Setenv("OPENCODE_DB", "")
+	cfg, err := Defaults()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(dataHome, "opencode", "opencode.db"); cfg.OpenCodeDB != want {
+		t.Fatalf("OpenCode default = %q, want %q", cfg.OpenCodeDB, want)
+	}
+	custom := filepath.Join(t.TempDir(), "custom.db")
+	t.Setenv("OPENCODE_DB", custom)
+	cfg, err = Defaults()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.OpenCodeDB != custom {
+		t.Fatalf("OPENCODE_DB ignored: %q", cfg.OpenCodeDB)
+	}
+	path := filepath.Join(t.TempDir(), "config.toml")
+	if err := os.WriteFile(path, []byte("opencode_db = \"configured.db\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Load(path, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.OpenCodeDB != "configured.db" {
+		t.Fatalf("explicit config did not override environment: %q", cfg.OpenCodeDB)
+	}
+}
+
 func TestAnthropicAdminKeyComesFromEnvironmentAndLookbackFromConfig(t *testing.T) {
 	t.Setenv("ANTHROPIC_ADMIN_KEY", "admin-secret")
 	cfg, err := Defaults()

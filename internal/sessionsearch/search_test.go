@@ -61,6 +61,54 @@ func TestSearchesHumanTextAcrossProviderStores(t *testing.T) {
 	}
 }
 
+func TestOpenCodeV2SearchAndConversation(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "opencode.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	_, err = db.Exec(`CREATE TABLE session_v2(id TEXT,directory TEXT,parent_id TEXT);
+CREATE TABLE session_message(id TEXT,session_id TEXT,type TEXT,time_created INTEGER,data TEXT);
+INSERT INTO session_v2 VALUES('parent','/work',NULL),('child','/work','parent');
+INSERT INTO session_message VALUES
+('u','parent','user',1000,'{"text":"cobalt question"}'),
+('a','parent','assistant',2000,'{"content":[{"type":"text","text":"cobalt answer"},{"type":"reasoning","text":"cobalt hidden reasoning"},{"type":"tool","state":{"content":[{"type":"text","text":"cobalt hidden tool output"}]}}]}'),
+('c','child','assistant',3000,'{"content":[{"type":"text","text":"cobalt child answer"}]}'),
+('s','parent','synthetic',4000,'{"text":"cobalt hidden synthetic"}');`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Config{OpenCodeDB: path}
+	report, err := Search(context.Background(), cfg, Query{Text: "cobalt", Provider: core.OpenCode})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Warnings) != 0 || len(report.Matches) != 1 {
+		t.Fatalf("V2 search = %#v", report)
+	}
+	for _, match := range report.Matches {
+		if match.SessionID != "parent" || strings.Contains(match.Snippet, "hidden") {
+			t.Fatalf("unexpected V2 match: %#v", match)
+		}
+	}
+	if report.Matches[0].SubagentID != "child" {
+		t.Fatalf("child attribution lost: %#v", report.Matches[0])
+	}
+	report, err = Conversation(context.Background(), cfg, core.OpenCode, "parent")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.Matches) != 3 || report.Matches[0].Role != "user" {
+		t.Fatalf("V2 conversation = %#v", report)
+	}
+	for _, match := range report.Matches {
+		if strings.Contains(match.Snippet, "hidden") {
+			t.Fatalf("non-conversational content leaked: %#v", match)
+		}
+	}
+}
+
 func TestSearchFiltersAndLimitsNewestFirst(t *testing.T) {
 	root := t.TempDir()
 	cfg := fixtureConfig(t, root)

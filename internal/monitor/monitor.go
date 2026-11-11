@@ -114,9 +114,9 @@ func (m *Monitor) scan(ctx context.Context, only core.Provider) error {
 		}
 		provider := providers.ProviderFor(path, claudeDir, codexDir, geminiDir, agyDir, piDir, openCodeDB)
 		if provider == core.OpenCode {
-			records, sources, parseErr := providers.ParseOpenCodeDB(path, func(source string, updated time.Time) bool {
+			records, sources, parseErr := providers.ParseOpenCodeDB(path, func(source string, state string) bool {
 				previous, sourceErr := m.store.Source(source)
-				return sourceErr == nil && previous.SessionID != "" && previous.Offset == updated.UnixNano()
+				return sourceErr == nil && previous.SessionID != "" && previous.ParserState == state
 			})
 			if parseErr != nil {
 				return parseErr
